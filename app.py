@@ -3,18 +3,23 @@ import pandas as pd
 import folium
 from lxml import etree
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 1")
+st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 2")
 
-st.title("🗺️ Editor de Rotas - Versão 1")
+st.title("🗺️ Editor de Rotas - Versão 2")
 
-# Upload dos arquivos
 uploaded_kmls = st.file_uploader("Upload dos KMLs (rotas)", type=["kml"], accept_multiple_files=True)
 uploaded_xlsx = st.file_uploader("Upload da relação de colaboradores (XLSX)", type=["xlsx"])
 
-colaboradores = pd.DataFrame()
+# Estado persistente
+if "colaboradores" not in st.session_state:
+    st.session_state["colaboradores"] = pd.DataFrame()
 
 if uploaded_xlsx:
-    colaboradores = pd.read_excel(uploaded_xlsx, engine="openpyxl")
+    st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
+
+colaboradores = st.session_state["colaboradores"]
+
+if not colaboradores.empty:
     st.subheader("📊 Relação de colaboradores")
     st.dataframe(colaboradores)
 
@@ -22,7 +27,8 @@ if uploaded_xlsx:
 st.subheader("🗺️ Visualização no mapa")
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
-# Adicionar rotas KML ao mapa
+# Adicionar rotas KML
+rotas = []
 if uploaded_kmls:
     for file in uploaded_kmls:
         kml_content = file.read()
@@ -36,6 +42,7 @@ if uploaded_kmls:
                 lon, lat, *_ = pair.split(",")
                 points.append((float(lat), float(lon)))
             folium.PolyLine(points, color="red", weight=3, opacity=0.8).add_to(m)
+        rotas.append(file.name.replace(".kml", ""))
 
 # Adicionar colaboradores
 if not colaboradores.empty:
@@ -51,7 +58,6 @@ if not colaboradores.empty:
         except:
             pass
 
-# Renderizar mapa sem recarregar a cada movimento
 st.components.v1.html(m._repr_html_(), height=600)
 
 # Resumo por rota
@@ -60,4 +66,16 @@ if not colaboradores.empty:
     resumo = colaboradores.groupby("ROTA")["COLABORADORES"].count().reset_index()
     resumo.columns = ["Rota", "Qtd Colaboradores"]
     st.table(resumo)
+
+# --- Transferência de colaboradores ---
+if not colaboradores.empty and rotas:
+    st.subheader("🔄 Transferência de colaboradores entre rotas")
+
+    colab_escolhido = st.selectbox("Selecione o colaborador", colaboradores["COLABORADORES"])
+    nova_rota = st.selectbox("Selecione a nova rota", rotas)
+
+    if st.button("Transferir"):
+        idx = colaboradores[colaboradores["COLABORADORES"] == colab_escolhido].index[0]
+        st.session_state["colaboradores"].at[idx, "ROTA"] = nova_rota
+        st.success(f"Colaborador {colab_escolhido} transferido para rota {nova_rota}.")
 
