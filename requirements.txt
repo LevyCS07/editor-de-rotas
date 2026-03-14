@@ -4,4 +4,4 @@ folium
 streamlit-folium
 simplekml
 openpyxl
-fastkml
+lxml
