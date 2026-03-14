@@ -4,9 +4,9 @@ import folium
 from folium.plugins import MarkerCluster
 from lxml import etree
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 2.1")
+st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 2.2")
 
-st.title("🗺️ Editor de Rotas - Versão 2.1")
+st.title("🗺️ Editor de Rotas - Versão 2.2")
 
 uploaded_kmls = st.file_uploader("Upload dos KMLs (rotas)", type=["kml"], accept_multiple_files=True)
 uploaded_xlsx = st.file_uploader("Upload da relação de colaboradores (XLSX)", type=["xlsx"])
@@ -28,27 +28,31 @@ if uploaded_kmls:
         kml_content = file.read()
         tree = etree.fromstring(kml_content)
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
-        coords = tree.xpath("//kml:coordinates", namespaces=ns)
-        pontos = []
-        for c in coords:
-            coord_text = c.text.strip()
+        # Captura todos os LineString
+        lines = tree.xpath("//kml:LineString/kml:coordinates", namespaces=ns)
+        segmentos = []
+        for line in lines:
+            coord_text = line.text.strip()
+            pontos = []
             for pair in coord_text.split():
                 lon, lat, *_ = pair.split(",")
                 pontos.append((float(lat), float(lon)))
-        rotas[file.name.replace(".kml", "")] = pontos
+            segmentos.append(pontos)
+        rotas[file.name.replace(".kml", "")] = segmentos
 
 # --- Controle de rotas ---
 st.subheader("⚙️ Controle de rotas no mapa")
+rotas_selecionadas = []
 if rotas:
     todas = st.checkbox("Ativar/Desativar todas as rotas", value=True)
-    rotas_selecionadas = []
     for nome in rotas.keys():
         if todas or st.checkbox(f"Mostrar rota {nome}", value=False):
             rotas_selecionadas.append(nome)
 
     # Adicionar apenas rotas selecionadas
     for nome in rotas_selecionadas:
-        folium.PolyLine(rotas[nome], color="red", weight=3, opacity=0.8).add_to(m)
+        for segmento in rotas[nome]:
+            folium.PolyLine(segmento, color="red", weight=3, opacity=0.8).add_to(m)
 
 # --- Cluster de colaboradores ---
 if not colaboradores.empty:
@@ -57,11 +61,14 @@ if not colaboradores.empty:
         try:
             lat = float(str(row["LAT"]).replace(",", "."))
             lon = float(str(row["LONG"]).replace(",", "."))
-            folium.Marker(
-                location=[lat, lon],
-                popup=f"{row['COLABORADORES']} (Matrícula: {row['MATRÍCULA']}, Rota: {row['ROTA']})",
-                icon=folium.Icon(color="blue", icon="user")
-            ).add_to(cluster)
+            rota = row["ROTA"]
+            # Só mostra colaboradores da rota selecionada
+            if rota in rotas_selecionadas or todas:
+                folium.Marker(
+                    location=[lat, lon],
+                    popup=f"{row['COLABORADORES']} (Matrícula: {row['MATRÍCULA']}, Rota: {rota})",
+                    icon=folium.Icon(color="blue", icon="user")
+                ).add_to(cluster)
         except:
             pass
 
