@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
+from folium.plugins import Kml
 
 st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 1")
 
@@ -15,7 +16,7 @@ colaboradores = pd.DataFrame()
 rotas = {}
 
 if uploaded_xlsx:
-    colaboradores = pd.read_excel(uploaded_xlsx)
+    colaboradores = pd.read_excel(uploaded_xlsx, engine="openpyxl")
     st.subheader("📊 Relação de colaboradores")
     st.dataframe(colaboradores)
 
@@ -25,9 +26,15 @@ if uploaded_kmls:
         st.write(f"- {file.name}")
         rotas[file.name] = file
 
-# Mapa
+# Criar mapa
 st.subheader("🗺️ Visualização no mapa")
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
+
+# Adicionar rotas KML ao mapa
+if uploaded_kmls:
+    for file in uploaded_kmls:
+        # O folium lê diretamente o arquivo KML
+        Kml(file).add_to(m)
 
 # Exibir colaboradores no mapa
 if not colaboradores.empty:
@@ -43,7 +50,8 @@ if not colaboradores.empty:
         except:
             pass
 
-st_folium(m, width=900, height=600)
+# Renderizar mapa sem recarregar a cada movimento
+st.components.v1.html(m._repr_html_(), height=600)
 
 # Resumo por rota
 if not colaboradores.empty:
