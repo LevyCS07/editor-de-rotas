@@ -1,6 +1,7 @@
 streamlit
 pandas
 folium
-simplekml
 streamlit-folium
+simplekml
 openpyxl
+fastkml
