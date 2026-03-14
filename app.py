@@ -75,22 +75,9 @@ if not colaboradores.empty:
             rota = row["ROTA"]
 
             if rota in rotas_selecionadas or todas:
-                # Popup com transferência
-                html_popup = f"""
-                <b>{row['COLABORADORES']}</b><br>
-                Matrícula: {row['MATRÍCULA']}<br>
-                Rota atual: {rota}<br>
-                <form action="" method="get">
-                    <label>Transferir para:</label><br>
-                    <select name="rota">
-                        {''.join([f'<option value="{r}">{r}</option>' for r in rotas.keys()])}
-                    </select><br><br>
-                    <input type="submit" value="Transferir">
-                </form>
-                """
                 folium.Marker(
                     location=[lat, lon],
-                    popup=folium.Popup(html_popup, max_width=250),
+                    popup=f"{row['COLABORADORES']} (Matrícula: {row['MATRÍCULA']}, Rota: {rota})",
                     icon=folium.Icon(color="blue", icon="user")
                 ).add_to(cluster)
         except:
@@ -98,11 +85,23 @@ if not colaboradores.empty:
 
 st.components.v1.html(m._repr_html_(), height=600)
 
-# Resumo atualizado
+# --- Transferência de colaboradores ---
+if not colaboradores.empty and rotas:
+    st.sidebar.subheader("🔄 Transferência de colaboradores")
+    colab_escolhido = st.sidebar.selectbox("Selecione o colaborador", colaboradores["COLABORADORES"])
+    nova_rota = st.sidebar.selectbox("Selecione a nova rota", list(rotas.keys()))
+
+    if st.sidebar.button("Transferir"):
+        idx = colaboradores[colaboradores["COLABORADORES"] == colab_escolhido].index[0]
+        st.session_state["colaboradores"].at[idx, "ROTA"] = nova_rota
+        st.success(f"Colaborador {colab_escolhido} transferido para rota {nova_rota}.")
+
+# --- Resumo atualizado ---
 if not colaboradores.empty:
     st.subheader("📌 Resumo por rota")
     resumo = colaboradores.groupby("ROTA")["COLABORADORES"].count().reset_index()
     resumo.columns = ["Rota", "Qtd Colaboradores"]
     st.table(resumo)
+
 
 
