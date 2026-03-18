@@ -17,6 +17,22 @@ if "rotas" not in st.session_state:
 if "selecionado" not in st.session_state:
     st.session_state["selecionado"] = None
 
+# Função robusta para carregar KML
+def carregar_kml(file):
+    tree = etree.fromstring(file.read())
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    segmentos = []
+    coords = tree.xpath("//kml:coordinates", namespaces=ns)
+    for c in coords:
+        coord_text = c.text.strip()
+        pontos = []
+        for pair in coord_text.split():
+            lon, lat, *_ = pair.split(",")
+            pontos.append((float(lat), float(lon)))
+        if pontos:
+            segmentos.append(pontos)
+    return segmentos
+
 # --- Barra lateral ---
 st.sidebar.header("⚙️ Editor de Rotas")
 
@@ -30,18 +46,7 @@ with st.sidebar.expander("📂 Upload de arquivos", expanded=True):
     if uploaded_kmls:
         rotas = {}
         for file in uploaded_kmls:
-            kml_content = file.read()
-            tree = etree.fromstring(kml_content)
-            ns = {"kml": "http://www.opengis.net/kml/2.2"}
-            lines = tree.xpath("//kml:LineString/kml:coordinates", namespaces=ns)
-            segmentos = []
-            for line in lines:
-                coord_text = line.text.strip()
-                pontos = []
-                for pair in coord_text.split():
-                    lon, lat, *_ = pair.split(",")
-                    pontos.append((float(lat), float(lon)))
-                segmentos.append(pontos)
+            segmentos = carregar_kml(file)
             rotas[file.name.replace(".kml", "")] = segmentos
         st.session_state["rotas"] = rotas
 
@@ -72,10 +77,12 @@ with st.sidebar.expander("✏️ Edição de rotas", expanded=False):
 # --- Mapa ---
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
+# Rotas
 for nome in rotas_selecionadas:
     for segmento in st.session_state["rotas"][nome]:
         folium.PolyLine(segmento, color="red", weight=3, opacity=0.8).add_to(m)
 
+# Colaboradores com cluster
 if not st.session_state["colaboradores"].empty:
     cluster = MarkerCluster().add_to(m)
     for _, row in st.session_state["colaboradores"].iterrows():
@@ -113,4 +120,3 @@ if not st.session_state["colaboradores"].empty:
             ls.style.linestyle.width = 3
     kml_buffer = io.BytesIO(kml.kml().encode("utf-8"))
     st.download_button("Baixar KML atualizado", kml_buffer.getvalue(), file_name="rotas_editadas.kml")
-
