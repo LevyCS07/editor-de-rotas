@@ -4,109 +4,137 @@ import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from lxml import etree
-import io
 from simplekml import Kml
+import math
+import io
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 3.1 Otimizada")
+st.set_page_config(layout="wide", page_title="Editor de Rotas com Embarques")
 
+# -----------------------------
+# Funções auxiliares
+# -----------------------------
+def distancia(p1, p2):
+    return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+def ponto_mais_proximo(colab_coord, stops):
+    menor = None
+    menor_dist = float("inf")
+    for stop in stops:
+        d = distancia(colab_coord, stop)
+        if d < menor_dist:
+            menor = stop
+            menor_dist = d
+    return menor
+
+def carregar_kml(file):
+    tree = etree.fromstring(file.read())
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    coords = tree.xpath("//kml:Point/kml:coordinates", namespaces=ns)
+    stops = []
+    for c in coords:
+        lon, lat, *_ = c.text.strip().split(",")
+        stops.append((float(lat), float(lon)))
+    return stops
+
+# -----------------------------
 # Estado inicial
+# -----------------------------
 if "colaboradores" not in st.session_state:
     st.session_state["colaboradores"] = pd.DataFrame()
 if "rotas" not in st.session_state:
     st.session_state["rotas"] = {}
+if "embarques" not in st.session_state:
+    st.session_state["embarques"] = {}
 if "selecionado" not in st.session_state:
     st.session_state["selecionado"] = None
 
-# Função robusta para carregar KML
-def carregar_kml(file):
-    tree = etree.fromstring(file.read())
-    ns = {"kml": "http://www.opengis.net/kml/2.2"}
-    segmentos = []
-    coords = tree.xpath("//kml:coordinates", namespaces=ns)
-    for c in coords:
-        coord_text = c.text.strip()
-        pontos = []
-        for pair in coord_text.split():
-            lon, lat, *_ = pair.split(",")
-            pontos.append((float(lat), float(lon)))
-        if pontos:
-            segmentos.append(pontos)
-    return segmentos
+# -----------------------------
+# Upload
+# -----------------------------
+st.sidebar.header("📂 Upload de arquivos")
+uploaded_xlsx = st.sidebar.file_uploader("Upload XLSX (colaboradores)", type=["xlsx"])
+uploaded_kmls = st.sidebar.file_uploader("Upload KMLs (rotas)", type=["kml"], accept_multiple_files=True)
 
-# --- Barra lateral ---
-st.sidebar.header("⚙️ Editor de Rotas")
+if uploaded_xlsx:
+    st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
 
-with st.sidebar.expander("📂 Upload de arquivos", expanded=True):
-    uploaded_kmls = st.file_uploader("Upload dos KMLs", type=["kml"], accept_multiple_files=True)
-    uploaded_xlsx = st.file_uploader("Upload da relação de colaboradores (XLSX)", type=["xlsx"])
+if uploaded_kmls:
+    rotas = {}
+    for file in uploaded_kmls:
+        stops = carregar_kml(file)
+        rotas[file.name.replace(".kml", "")] = {"stops": stops}
+    st.session_state["rotas"] = rotas
 
-    if uploaded_xlsx:
-        st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
+# -----------------------------
+# Correlação inicial
+# -----------------------------
+if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
+    embarques = {}
+    for _, row in st.session_state["colaboradores"].iterrows():
+        rota_nome = row["ROTA"]
+        colab_coord = (float(row["LAT"]), float(row["LONG"]))
+        stops = st.session_state["rotas"][rota_nome]["stops"]
+        embarque = ponto_mais_proximo(colab_coord, stops)
+        if rota_nome not in embarques:
+            embarques[rota_nome] = {}
+        if embarque not in embarques[rota_nome]:
+            embarques[rota_nome][embarque] = []
+        embarques[rota_nome][embarque].append(row["COLABORADORES"])
+    st.session_state["embarques"] = embarques
 
-    if uploaded_kmls:
-        rotas = {}
-        for file in uploaded_kmls:
-            segmentos = carregar_kml(file)
-            rotas[file.name.replace(".kml", "")] = segmentos
-        st.session_state["rotas"] = rotas
-
-with st.sidebar.expander("🛣️ Rotas disponíveis", expanded=False):
-    rotas_selecionadas = []
-    if st.session_state["rotas"]:
-        todas = st.checkbox("Ativar/Desativar todas", value=True)
-        for nome in st.session_state["rotas"].keys():
-            if todas or st.checkbox(f"Mostrar rota {nome}", value=False):
-                rotas_selecionadas.append(nome)
-
-with st.sidebar.expander("📊 Resumo por rota", expanded=False):
-    if not st.session_state["colaboradores"].empty:
-        resumo = st.session_state["colaboradores"].groupby("ROTA")["COLABORADORES"].count().reset_index()
-        resumo.columns = ["Rota", "Qtd Colaboradores"]
-        st.table(resumo)
-
-with st.sidebar.expander("✏️ Edição de rotas", expanded=False):
-    if st.session_state["selecionado"]:
-        st.write(f"Colaborador selecionado: {st.session_state['selecionado']}")
-        nova_rota = st.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
-        if st.button("Transferir"):
-            idx = st.session_state["colaboradores"][st.session_state["colaboradores"]["COLABORADORES"] == st.session_state["selecionado"]].index[0]
-            st.session_state["colaboradores"].at[idx, "ROTA"] = nova_rota
-            st.success(f"{st.session_state['selecionado']} transferido para {nova_rota}.")
-            st.session_state["selecionado"] = None
-
-# --- Mapa ---
+# -----------------------------
+# Mapa
+# -----------------------------
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
-# Rotas
-for nome in rotas_selecionadas:
-    for segmento in st.session_state["rotas"][nome]:
-        folium.PolyLine(segmento, color="red", weight=3, opacity=0.8).add_to(m)
+# Mostrar pontos de parada e embarques
+for rota, stops_dict in st.session_state["embarques"].items():
+    for stop, colabs in stops_dict.items():
+        folium.Marker(
+            location=[stop[0], stop[1]],
+            popup=f"{rota}: {', '.join(colabs)}",
+            icon=folium.Icon(color="green", icon="bus")
+        ).add_to(m)
 
-# Colaboradores com cluster
+# Mostrar colaboradores
 if not st.session_state["colaboradores"].empty:
     cluster = MarkerCluster().add_to(m)
     for _, row in st.session_state["colaboradores"].iterrows():
-        try:
-            lat = float(str(row["LAT"]).replace(",", "."))
-            lon = float(str(row["LONG"]).replace(",", "."))
-            rota = row["ROTA"]
-            if rota in rotas_selecionadas or (rotas_selecionadas == []):
-                folium.Marker(
-                    location=[lat, lon],
-                    popup=row["COLABORADORES"],
-                    icon=folium.Icon(color="blue", icon="user")
-                ).add_to(cluster)
-        except:
-            pass
+        lat, lon = float(row["LAT"]), float(row["LONG"])
+        folium.Marker(
+            location=[lat, lon],
+            popup=row["COLABORADORES"],
+            icon=folium.Icon(color="blue", icon="user")
+        ).add_to(cluster)
 
-# ⚡ Otimização: sem return_on_move, usando key para manter estado
 map_data = st_folium(m, height=600, width=1000, key="mapa")
 
-# Captura clique no colaborador
-if map_data and map_data.get("last_object_clicked"):
-    st.session_state["selecionado"] = map_data["last_object_clicked"]["popup"]
+# -----------------------------
+# Transferência
+# -----------------------------
+st.sidebar.header("✏️ Transferência de colaboradores")
+if not st.session_state["colaboradores"].empty:
+    colab_nome = st.sidebar.selectbox("Selecione colaborador", st.session_state["colaboradores"]["COLABORADORES"])
+    nova_rota = st.sidebar.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
+    if st.sidebar.button("Transferir"):
+        idx = st.session_state["colaboradores"][st.session_state["colaboradores"]["COLABORADORES"] == colab_nome].index[0]
+        colab_coord = (float(st.session_state["colaboradores"].at[idx, "LAT"]),
+                       float(st.session_state["colaboradores"].at[idx, "LONG"]))
+        stops = st.session_state["rotas"][nova_rota]["stops"]
+        embarque = ponto_mais_proximo(colab_coord, stops)
 
-# --- Exportação ---
+        if nova_rota not in st.session_state["embarques"]:
+            st.session_state["embarques"][nova_rota] = {}
+        if embarque not in st.session_state["embarques"][nova_rota]:
+            st.session_state["embarques"][nova_rota][embarque] = []
+        st.session_state["embarques"][nova_rota][embarque].append(colab_nome)
+
+        st.session_state["colaboradores"].at[idx, "ROTA"] = nova_rota
+        st.success(f"{colab_nome} transferido para {nova_rota}, embarque em {embarque}")
+
+# -----------------------------
+# Exportação
+# -----------------------------
 st.subheader("📤 Exportar arquivos editados")
 if not st.session_state["colaboradores"].empty:
     buffer = io.BytesIO()
@@ -114,10 +142,9 @@ if not st.session_state["colaboradores"].empty:
     st.download_button("Baixar XLSX atualizado", buffer.getvalue(), file_name="colaboradores_editados.xlsx")
 
     kml = Kml()
-    for rota, segmentos in st.session_state["rotas"].items():
-        for segmento in segmentos:
-            ls = kml.newlinestring(name=rota, coords=[(lon, lat) for lat, lon in segmento])
-            ls.style.linestyle.color = "ff0000ff"
-            ls.style.linestyle.width = 3
+    for rota, stops_dict in st.session_state["embarques"].items():
+        for stop, colabs in stops_dict.items():
+            pnt = kml.newpoint(name=f"{rota} - {', '.join(colabs)}", coords=[(stop[1], stop[0])])
+            pnt.style.iconstyle.color = "ff0000ff"
     kml_buffer = io.BytesIO(kml.kml().encode("utf-8"))
     st.download_button("Baixar KML atualizado", kml_buffer.getvalue(), file_name="rotas_editadas.kml")
