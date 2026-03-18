@@ -6,7 +6,6 @@ from lxml import etree
 from simplekml import Kml
 import math
 import io
-import json
 
 st.set_page_config(layout="wide", page_title="Editor de Rotas com Embarques")
 
@@ -107,7 +106,8 @@ if not st.session_state["colaboradores"].empty:
             icon=folium.Icon(color="blue", icon="user")
         ).add_to(cluster)
 
-map_data = st.map_input_widgets(m, key="mapa")
+st.title("Mapa de Rotas e Embarques")
+st_map = st.folium_static(m, width=1000, height=600)
 
 # -----------------------------
 # Transferência
