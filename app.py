@@ -7,7 +7,7 @@ from lxml import etree
 import io
 from simplekml import Kml
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 3.1")
+st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 3.1 Otimizada")
 
 # Estado inicial
 if "colaboradores" not in st.session_state:
@@ -99,7 +99,8 @@ if not st.session_state["colaboradores"].empty:
         except:
             pass
 
-map_data = st_folium(m, height=600, width=1000)
+# ⚡ Otimização: não recarregar a cada movimento
+map_data = st_folium(m, height=600, width=1000, return_on_move=False)
 
 # Captura clique no colaborador
 if map_data and map_data.get("last_object_clicked"):
