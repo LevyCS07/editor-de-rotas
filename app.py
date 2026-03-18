@@ -7,7 +7,7 @@ from lxml import etree
 import io
 from simplekml import Kml
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas")
+st.set_page_config(layout="wide", page_title="Editor de Rotas - Versão 3.1 Otimizada")
 
 # Estado inicial
 if "colaboradores" not in st.session_state:
@@ -17,143 +17,107 @@ if "rotas" not in st.session_state:
 if "selecionado" not in st.session_state:
     st.session_state["selecionado"] = None
 
-# Cores para rotas
-CORES = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'darkblue', 'darkgreen']
-
-# Função para carregar KML
+# Função robusta para carregar KML
 def carregar_kml(file):
-    try:
-        tree = etree.fromstring(file.read())
-        ns = {"kml": "http://www.opengis.net/kml/2.2"}
-        segmentos = []
-        coords = tree.xpath("//kml:coordinates", namespaces=ns)
-        for c in coords:
-            pontos = []
-            for par in c.text.strip().split():
-                lon, lat, _ = par.split(",")[:3]
-                pontos.append((float(lat), float(lon)))
-            if pontos:
-                segmentos.append(pontos)
-        return segmentos
-    except:
-        return []
+    tree = etree.fromstring(file.read())
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+    segmentos = []
+    coords = tree.xpath("//kml:coordinates", namespaces=ns)
+    for c in coords:
+        coord_text = c.text.strip()
+        pontos = []
+        for pair in coord_text.split():
+            lon, lat, *_ = pair.split(",")
+            pontos.append((float(lat), float(lon)))
+        if pontos:
+            segmentos.append(pontos)
+    return segmentos
 
-# Título
-st.title("🗺️ Editor de Rotas")
+# --- Barra lateral ---
+st.sidebar.header("⚙️ Editor de Rotas")
 
-# Sidebar
-with st.sidebar:
-    st.header("📁 Arquivos")
-    
-    # Upload KMLs
-    kmls = st.file_uploader("KMLs", type=["kml"], accept_multiple_files=True)
-    if kmls:
+with st.sidebar.expander("📂 Upload de arquivos", expanded=True):
+    uploaded_kmls = st.file_uploader("Upload dos KMLs", type=["kml"], accept_multiple_files=True)
+    uploaded_xlsx = st.file_uploader("Upload da relação de colaboradores (XLSX)", type=["xlsx"])
+
+    if uploaded_xlsx:
+        st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
+
+    if uploaded_kmls:
         rotas = {}
-        for f in kmls:
-            nome = f.name.replace(".kml", "")
-            segmentos = carregar_kml(f)
-            if segmentos:
-                rotas[nome] = segmentos
+        for file in uploaded_kmls:
+            segmentos = carregar_kml(file)
+            rotas[file.name.replace(".kml", "")] = segmentos
         st.session_state["rotas"] = rotas
-        st.success(f"{len(rotas)} rotas carregadas")
-    
-    # Upload Planilha
-    xlsx = st.file_uploader("Planilha", type=["xlsx"])
-    if xlsx:
-        try:
-            df = pd.read_excel(xlsx, engine="openpyxl")
-            st.session_state["colaboradores"] = df
-            st.success("Planilha carregada")
-        except:
-            st.error("Erro ao carregar planilha")
-    
-    # Seleção de rotas
-    rotas_ativas = []
-    if st.session_state["rotas"]:
-        st.divider()
-        st.header("🛣️ Rotas")
-        todas = st.checkbox("Todas", value=True)
-        for i, nome in enumerate(st.session_state["rotas"].keys()):
-            cor = CORES[i % len(CORES)]
-            if todas or st.checkbox(f"{nome}", key=f"rota_{nome}"):
-                rotas_ativas.append((nome, cor))
-    
-    # Editor
-    if st.session_state["selecionado"]:
-        st.divider()
-        st.header("✏️ Editar")
-        st.info(f"Selecionado: {st.session_state['selecionado']}")
-        
-        if st.session_state["rotas"]:
-            nova = st.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
-            if st.button("Transferir"):
-                idx = st.session_state["colaboradores"][
-                    st.session_state["colaboradores"]["COLABORADORES"] == st.session_state["selecionado"]
-                ].index[0]
-                st.session_state["colaboradores"].at[idx, "ROTA"] = nova
-                st.session_state["selecionado"] = None
-                st.rerun()
 
-# Mapa
+with st.sidebar.expander("🛣️ Rotas disponíveis", expanded=False):
+    rotas_selecionadas = []
+    if st.session_state["rotas"]:
+        todas = st.checkbox("Ativar/Desativar todas", value=True)
+        for nome in st.session_state["rotas"].keys():
+            if todas or st.checkbox(f"Mostrar rota {nome}", value=False):
+                rotas_selecionadas.append(nome)
+
+with st.sidebar.expander("📊 Resumo por rota", expanded=False):
+    if not st.session_state["colaboradores"].empty:
+        resumo = st.session_state["colaboradores"].groupby("ROTA")["COLABORADORES"].count().reset_index()
+        resumo.columns = ["Rota", "Qtd Colaboradores"]
+        st.table(resumo)
+
+with st.sidebar.expander("✏️ Edição de rotas", expanded=False):
+    if st.session_state["selecionado"]:
+        st.write(f"Colaborador selecionado: {st.session_state['selecionado']}")
+        nova_rota = st.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
+        if st.button("Transferir"):
+            idx = st.session_state["colaboradores"][st.session_state["colaboradores"]["COLABORADORES"] == st.session_state["selecionado"]].index[0]
+            st.session_state["colaboradores"].at[idx, "ROTA"] = nova_rota
+            st.success(f"{st.session_state['selecionado']} transferido para {nova_rota}.")
+            st.session_state["selecionado"] = None
+
+# --- Mapa ---
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
-# Desenhar rotas
-for nome, cor in rotas_ativas:
-    for seg in st.session_state["rotas"][nome]:
-        folium.PolyLine(seg, color=cor, weight=3, popup=nome).add_to(m)
+# Rotas
+for nome in rotas_selecionadas:
+    for segmento in st.session_state["rotas"][nome]:
+        folium.PolyLine(segmento, color="red", weight=3, opacity=0.8).add_to(m)
 
-# Desenhar colaboradores
+# Colaboradores com cluster
 if not st.session_state["colaboradores"].empty:
     cluster = MarkerCluster().add_to(m)
     for _, row in st.session_state["colaboradores"].iterrows():
         try:
             lat = float(str(row["LAT"]).replace(",", "."))
             lon = float(str(row["LONG"]).replace(",", "."))
-            nome = row["COLABORADORES"]
-            folium.Marker(
-                [lat, lon],
-                popup=nome,
-                icon=folium.Icon(color="blue")
-            ).add_to(cluster)
+            rota = row["ROTA"]
+            if rota in rotas_selecionadas or (rotas_selecionadas == []):
+                folium.Marker(
+                    location=[lat, lon],
+                    popup=row["COLABORADORES"],
+                    icon=folium.Icon(color="blue", icon="user")
+                ).add_to(cluster)
         except:
-            continue
+            pass
 
-# Mostrar mapa
-mapa = st_folium(m, height=600, width=None, key="mapa")
+# ⚡ Otimização: sem return_on_move, usando key para manter estado
+map_data = st_folium(m, height=600, width=1000, key="mapa")
 
-# Capturar clique
-if mapa and mapa.get("last_object_clicked"):
-    popup = mapa["last_object_clicked"].get("popup")
-    if popup:
-        st.session_state["selecionado"] = popup
-        st.rerun()
+# Captura clique no colaborador
+if map_data and map_data.get("last_object_clicked"):
+    st.session_state["selecionado"] = map_data["last_object_clicked"]["popup"]
 
-# Exportação
+# --- Exportação ---
+st.subheader("📤 Exportar arquivos editados")
 if not st.session_state["colaboradores"].empty:
-    st.divider()
-    col1, col2 = st.columns(2)
-    
-    # Exportar XLSX
-    with col1:
-        buffer = io.BytesIO()
-        st.session_state["colaboradores"].to_excel(buffer, index=False)
-        st.download_button(
-            "📥 Download XLSX",
-            buffer.getvalue(),
-            "colaboradores_editados.xlsx"
-        )
-    
-    # Exportar KML
-    with col2:
-        if st.session_state["rotas"]:
-            kml = Kml()
-            for nome, segs in st.session_state["rotas"].items():
-                for seg in segs:
-                    coords = [(lon, lat) for lat, lon in seg]
-                    kml.newlinestring(name=nome, coords=coords)
-            kml_buffer = io.BytesIO(kml.kml().encode("utf-8"))
-            st.download_button(
-                "🗺️ Download KML",
-                kml_buffer.getvalue(),
-                "rotas_editadas.kml"
-            )
+    buffer = io.BytesIO()
+    st.session_state["colaboradores"].to_excel(buffer, index=False, engine="openpyxl")
+    st.download_button("Baixar XLSX atualizado", buffer.getvalue(), file_name="colaboradores_editados.xlsx")
+
+    kml = Kml()
+    for rota, segmentos in st.session_state["rotas"].items():
+        for segmento in segmentos:
+            ls = kml.newlinestring(name=rota, coords=[(lon, lat) for lat, lon in segmento])
+            ls.style.linestyle.color = "ff0000ff"
+            ls.style.linestyle.width = 3
+    kml_buffer = io.BytesIO(kml.kml().encode("utf-8"))
+    st.download_button("Baixar KML atualizado", kml_buffer.getvalue(), file_name="rotas_editadas.kml")
