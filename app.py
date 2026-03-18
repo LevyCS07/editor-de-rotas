@@ -99,8 +99,8 @@ if not st.session_state["colaboradores"].empty:
         except:
             pass
 
-# ⚡ Otimização: não recarregar a cada movimento
-map_data = st_folium(m, height=600, width=1000, return_on_move=False)
+# ⚡ Otimização: sem return_on_move, usando key para manter estado
+map_data = st_folium(m, height=600, width=1000, key="mapa")
 
 # Captura clique no colaborador
 if map_data and map_data.get("last_object_clicked"):
