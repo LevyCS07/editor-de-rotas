@@ -107,7 +107,11 @@ if not st.session_state["colaboradores"].empty:
             icon=folium.Icon(color="blue", icon="user")
         ).add_to(cluster)
 
-map_data = st_folium(m, height=600, width=1000, key="mapa")
+def on_marker_click(feature, coordinates, name):
+    st.session_state["selecionado"] = name
+    # Atualize o estado do aplicativo de acordo com a interação do usuário
+
+map_data = st_folium(m, height=600, width=1000, key="mapa", on_marker_click=on_marker_click)
 
 # -----------------------------
 # Transferência
