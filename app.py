@@ -29,12 +29,25 @@ def ponto_mais_proximo(colab_coord, stops):
 def carregar_kml(file):
     tree = etree.fromstring(file.read())
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
-    coords = tree.xpath("//kml:Point/kml:coordinates", namespaces=ns)
+    
+    # Pontos de parada
+    coords_points = tree.xpath("//kml:Point/kml:coordinates", namespaces=ns)
     stops = []
-    for c in coords:
+    for c in coords_points:
         lon, lat, *_ = c.text.strip().split(",")
         stops.append((float(lat), float(lon)))
-    return stops
+    
+    # Traçado da rota (LineString)
+    coords_lines = tree.xpath("//kml:LineString/kml:coordinates", namespaces=ns)
+    segmentos = []
+    for c in coords_lines:
+        pontos = []
+        for pair in c.text.strip().split():
+            lon, lat, *_ = pair.split(",")
+            pontos.append((float(lat), float(lon)))
+        segmentos.append(pontos)
+    
+    return {"stops": stops, "segmentos": segmentos}
 
 # -----------------------------
 # Estado inicial
@@ -45,8 +58,6 @@ if "rotas" not in st.session_state:
     st.session_state["rotas"] = {}
 if "embarques" not in st.session_state:
     st.session_state["embarques"] = {}
-if "selecionado" not in st.session_state:
-    st.session_state["selecionado"] = None
 
 # -----------------------------
 # Upload
@@ -61,8 +72,8 @@ if uploaded_xlsx:
 if uploaded_kmls:
     rotas = {}
     for file in uploaded_kmls:
-        stops = carregar_kml(file)
-        rotas[file.name.replace(".kml", "")] = {"stops": stops}
+        dados = carregar_kml(file)
+        rotas[file.name.replace(".kml", "")] = dados
     st.session_state["rotas"] = rotas
 
 # -----------------------------
@@ -86,6 +97,11 @@ if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
 # Mapa
 # -----------------------------
 m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
+
+# Mostrar traçado das rotas
+for rota, dados in st.session_state["rotas"].items():
+    for segmento in dados["segmentos"]:
+        folium.PolyLine(segmento, color="red", weight=3, opacity=0.7).add_to(m)
 
 # Mostrar pontos de parada e embarques
 for rota, stops_dict in st.session_state["embarques"].items():
