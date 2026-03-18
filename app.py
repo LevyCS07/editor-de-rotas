@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 from lxml import etree
 from simplekml import Kml
 import math
@@ -107,7 +108,7 @@ if not st.session_state["colaboradores"].empty:
         ).add_to(cluster)
 
 st.title("Mapa de Rotas e Embarques")
-st_map = st.folium_static(m, width=1000, height=600)
+st_map = st_folium(m, width=1000, height=600, key="mapa")
 
 # -----------------------------
 # Transferência
