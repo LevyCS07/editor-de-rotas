@@ -68,11 +68,19 @@ def remover_colaborador(nome):
 def criar_mapa():
     m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
+    rotas_visiveis = st.session_state.get("rotas_visiveis", [])
+
+    # ROTAS
     for rota, dados in st.session_state["rotas"].items():
+        if rota not in rotas_visiveis:
+            continue
         for segmento in dados["segmentos"]:
             folium.PolyLine(segmento, color="red", weight=3).add_to(m)
 
+    # EMBARQUES
     for rota, stops_dict in st.session_state["embarques"].items():
+        if rota not in rotas_visiveis:
+            continue
         for stop, colabs in stops_dict.items():
             folium.Marker(
                 location=[stop[0], stop[1]],
@@ -80,9 +88,12 @@ def criar_mapa():
                 icon=folium.Icon(color="green", icon="bus")
             ).add_to(m)
 
+    # COLABORADORES
     if not st.session_state["colaboradores"].empty:
         cluster = MarkerCluster().add_to(m)
         for row in st.session_state["colaboradores"].itertuples():
+            if row.ROTA not in rotas_visiveis:
+                continue
             folium.Marker(
                 location=[row.LAT, row.LONG],
                 popup=row.COLABORADORES,
@@ -104,6 +115,8 @@ if "mapa" not in st.session_state:
     st.session_state["mapa"] = None
 if "mapa_atualizado" not in st.session_state:
     st.session_state["mapa_atualizado"] = True
+if "rotas_visiveis" not in st.session_state:
+    st.session_state["rotas_visiveis"] = []
 
 # -----------------------------
 # Upload
@@ -123,6 +136,24 @@ if uploaded_kmls:
         nome = file.name.replace(".kml", "")
         rotas[nome] = dados
     st.session_state["rotas"] = rotas
+    st.session_state["rotas_visiveis"] = list(rotas.keys())
+    st.session_state["mapa_atualizado"] = True
+
+# -----------------------------
+# Filtro de visualização
+# -----------------------------
+st.sidebar.header("👁️ Visualização de rotas")
+
+todas_rotas = list(st.session_state["rotas"].keys())
+
+rotas_visiveis = st.sidebar.multiselect(
+    "Selecione rotas para exibir",
+    todas_rotas,
+    default=st.session_state["rotas_visiveis"]
+)
+
+if set(rotas_visiveis) != set(st.session_state["rotas_visiveis"]):
+    st.session_state["rotas_visiveis"] = rotas_visiveis
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
@@ -137,7 +168,7 @@ if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
         if rota_nome not in st.session_state["rotas"]:
             continue
 
-        colab_coord = (float(getattr(row, "LAT")), float(getattr(row, "LONG")))
+        colab_coord = (float(row.LAT), float(row.LONG))
         stops = st.session_state["rotas"][rota_nome]["stops"]
 
         if not stops:
@@ -147,13 +178,13 @@ if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
 
         embarques.setdefault(rota_nome, {})
         embarques[rota_nome].setdefault(embarque, [])
-        embarques[rota_nome][embarque].append(getattr(row, "COLABORADORES"))
+        embarques[rota_nome][embarque].append(row.COLABORADORES)
 
     st.session_state["embarques"] = embarques
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# Mapa (OTIMIZADO)
+# Mapa
 # -----------------------------
 if st.session_state["mapa"] is None or st.session_state["mapa_atualizado"]:
     st.session_state["mapa"] = criar_mapa()
