@@ -7,8 +7,15 @@ from lxml import etree
 from simplekml import Kml
 import math
 import io
+import random
 
 st.set_page_config(layout="wide", page_title="Editor de Rotas com Embarques")
+
+# -----------------------------
+# CORES POR ROTA
+# -----------------------------
+def gerar_cor():
+    return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
 # -----------------------------
 # Funções auxiliares
@@ -65,22 +72,27 @@ def remover_colaborador(nome):
             if nome in stops[stop]:
                 stops[stop].remove(nome)
 
+# -----------------------------
+# MAPA
+# -----------------------------
 def criar_mapa():
     m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
 
     rotas_visiveis = st.session_state.get("rotas_visiveis", [])
 
-    # ROTAS
     for rota, dados in st.session_state["rotas"].items():
         if rota not in rotas_visiveis:
             continue
-        for segmento in dados["segmentos"]:
-            folium.PolyLine(segmento, color="red", weight=3).add_to(m)
 
-    # EMBARQUES
+        cor = st.session_state["cores_rotas"].get(rota, "#FF0000")
+
+        for segmento in dados["segmentos"]:
+            folium.PolyLine(segmento, color=cor, weight=4).add_to(m)
+
     for rota, stops_dict in st.session_state["embarques"].items():
         if rota not in rotas_visiveis:
             continue
+
         for stop, colabs in stops_dict.items():
             folium.Marker(
                 location=[stop[0], stop[1]],
@@ -88,178 +100,119 @@ def criar_mapa():
                 icon=folium.Icon(color="green", icon="bus")
             ).add_to(m)
 
-    # COLABORADORES
     if not st.session_state["colaboradores"].empty:
         cluster = MarkerCluster().add_to(m)
+
         for row in st.session_state["colaboradores"].itertuples():
             if row.ROTA not in rotas_visiveis:
                 continue
+
             folium.Marker(
                 location=[row.LAT, row.LONG],
-                popup=row.COLABORADORES,
+                popup=f"{row.COLABORADORES} ({row.ROTA})",
                 icon=folium.Icon(color="blue")
             ).add_to(cluster)
 
     return m
 
 # -----------------------------
-# Estado inicial
+# ESTADO
 # -----------------------------
-if "colaboradores" not in st.session_state:
-    st.session_state["colaboradores"] = pd.DataFrame()
-if "rotas" not in st.session_state:
-    st.session_state["rotas"] = {}
-if "embarques" not in st.session_state:
-    st.session_state["embarques"] = {}
-if "mapa" not in st.session_state:
-    st.session_state["mapa"] = None
-if "mapa_atualizado" not in st.session_state:
+for key, default in {
+    "colaboradores": pd.DataFrame(),
+    "rotas": {},
+    "embarques": {},
+    "mapa": None,
+    "mapa_atualizado": True,
+    "rotas_visiveis": [],
+    "cores_rotas": {},
+    "modo_transferencia": False
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+st.sidebar.header("📂 Upload")
+
+xlsx = st.sidebar.file_uploader("Colaboradores", type=["xlsx"])
+kmls = st.sidebar.file_uploader("Rotas", type=["kml"], accept_multiple_files=True)
+
+if xlsx:
+    st.session_state["colaboradores"] = pd.read_excel(xlsx)
     st.session_state["mapa_atualizado"] = True
-if "rotas_visiveis" not in st.session_state:
-    st.session_state["rotas_visiveis"] = []
 
-# -----------------------------
-# Upload
-# -----------------------------
-st.sidebar.header("📂 Upload de arquivos")
-uploaded_xlsx = st.sidebar.file_uploader("Upload XLSX (colaboradores)", type=["xlsx"])
-uploaded_kmls = st.sidebar.file_uploader("Upload KMLs (rotas)", type=["kml"], accept_multiple_files=True)
-
-if uploaded_xlsx:
-    st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
-    st.session_state["mapa_atualizado"] = True
-
-if uploaded_kmls:
+if kmls:
     rotas = {}
-    for file in uploaded_kmls:
-        dados = carregar_kml(file)
-        nome = file.name.replace(".kml", "")
-        rotas[nome] = dados
+    cores = {}
+    for f in kmls:
+        nome = f.name.replace(".kml", "")
+        rotas[nome] = carregar_kml(f)
+        cores[nome] = gerar_cor()
+
     st.session_state["rotas"] = rotas
+    st.session_state["cores_rotas"] = cores
     st.session_state["rotas_visiveis"] = list(rotas.keys())
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# Filtro de visualização
+# FILTRO ROTAS
 # -----------------------------
-st.sidebar.header("👁️ Visualização de rotas")
+st.sidebar.header("👁️ Rotas visíveis")
 
-todas_rotas = list(st.session_state["rotas"].keys())
-
-rotas_visiveis = st.sidebar.multiselect(
-    "Selecione rotas para exibir",
-    todas_rotas,
+visiveis = st.sidebar.multiselect(
+    "Rotas",
+    list(st.session_state["rotas"].keys()),
     default=st.session_state["rotas_visiveis"]
 )
 
-if set(rotas_visiveis) != set(st.session_state["rotas_visiveis"]):
-    st.session_state["rotas_visiveis"] = rotas_visiveis
+if set(visiveis) != set(st.session_state["rotas_visiveis"]):
+    st.session_state["rotas_visiveis"] = visiveis
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# Correlação inicial
+# BOTÃO TRANSFERÊNCIA
 # -----------------------------
-if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
-    embarques = {}
+st.sidebar.header("⚡ Modo")
 
-    for row in st.session_state["colaboradores"].itertuples():
-        rota_nome = getattr(row, "ROTA")
+if st.sidebar.button("TRANSFERÊNCIA ON/OFF"):
+    st.session_state["modo_transferencia"] = not st.session_state["modo_transferencia"]
 
-        if rota_nome not in st.session_state["rotas"]:
-            continue
-
-        colab_coord = (float(row.LAT), float(row.LONG))
-        stops = st.session_state["rotas"][rota_nome]["stops"]
-
-        if not stops:
-            continue
-
-        embarque = ponto_mais_proximo(colab_coord, stops)
-
-        embarques.setdefault(rota_nome, {})
-        embarques[rota_nome].setdefault(embarque, [])
-        embarques[rota_nome][embarque].append(row.COLABORADORES)
-
-    st.session_state["embarques"] = embarques
-    st.session_state["mapa_atualizado"] = True
+st.sidebar.write("Status:", "🟢 ON" if st.session_state["modo_transferencia"] else "🔴 OFF")
 
 # -----------------------------
-# Mapa
+# PAINEL DE ROTAS
+# -----------------------------
+st.sidebar.header("📊 Ocupação das rotas")
+
+contagem = {}
+for _, row in st.session_state["colaboradores"].iterrows():
+    contagem[row["ROTA"]] = contagem.get(row["ROTA"], 0) + 1
+
+for rota, qtd in contagem.items():
+    st.sidebar.write(f"{rota}: {qtd} pessoas")
+
+# -----------------------------
+# MAPA GRANDE
 # -----------------------------
 if st.session_state["mapa"] is None or st.session_state["mapa_atualizado"]:
     st.session_state["mapa"] = criar_mapa()
     st.session_state["mapa_atualizado"] = False
 
-st.title("Mapa de Rotas e Embarques")
-st_folium(st.session_state["mapa"], width=1000, height=600, returned_objects=[])
+st.title("Mapa de Rotas")
+map_data = st_folium(
+    st.session_state["mapa"],
+    width=1400,
+    height=800,
+    returned_objects=["last_clicked"]
+)
 
 # -----------------------------
-# Transferência
+# CLIQUE NO MAPA (BASE)
 # -----------------------------
-st.sidebar.header("✏️ Transferência de colaboradores")
+if st.session_state["modo_transferencia"] and map_data["last_clicked"]:
+    lat = map_data["last_clicked"]["lat"]
+    lon = map_data["last_clicked"]["lng"]
 
-if not st.session_state["colaboradores"].empty:
-    nomes = st.session_state["colaboradores"]["COLABORADORES"].tolist()
-
-    colab_nome = st.sidebar.selectbox("Selecione colaborador", nomes)
-    nova_rota = st.sidebar.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
-
-    if st.sidebar.button("Transferir"):
-        df = st.session_state["colaboradores"]
-        idx_list = df[df["COLABORADORES"] == colab_nome].index
-
-        if len(idx_list) == 0:
-            st.warning("Colaborador não encontrado")
-        else:
-            idx = idx_list[0]
-
-            colab_coord = (float(df.at[idx, "LAT"]), float(df.at[idx, "LONG"]))
-            stops = st.session_state["rotas"][nova_rota]["stops"]
-
-            if not stops:
-                st.warning("Rota sem pontos de parada")
-            else:
-                remover_colaborador(colab_nome)
-
-                embarque = ponto_mais_proximo(colab_coord, stops)
-
-                st.session_state["embarques"].setdefault(nova_rota, {})
-                st.session_state["embarques"][nova_rota].setdefault(embarque, [])
-                st.session_state["embarques"][nova_rota][embarque].append(colab_nome)
-
-                df.at[idx, "ROTA"] = nova_rota
-                st.session_state["mapa_atualizado"] = True
-
-                st.success(f"{colab_nome} transferido para {nova_rota}")
-
-# -----------------------------
-# Exportação
-# -----------------------------
-st.subheader("📤 Exportar arquivos editados")
-
-if not st.session_state["colaboradores"].empty:
-    buffer = io.BytesIO()
-    st.session_state["colaboradores"].to_excel(buffer, index=False, engine="openpyxl")
-
-    st.download_button(
-        "Baixar XLSX atualizado",
-        buffer.getvalue(),
-        file_name="colaboradores_editados.xlsx"
-    )
-
-    kml = Kml()
-
-    for rota, stops_dict in st.session_state["embarques"].items():
-        for stop, colabs in stops_dict.items():
-            kml.newpoint(
-                name=f"{rota} - {', '.join(colabs)}",
-                coords=[(stop[1], stop[0])]
-            )
-
-    kml_buffer = io.BytesIO(kml.kml().encode("utf-8"))
-
-    st.download_button(
-        "Baixar KML atualizado",
-        kml_buffer.getvalue(),
-        file_name="rotas_editadas.kml"
-    )
+    st.write(f"📍 Clique detectado: {lat}, {lon}")
