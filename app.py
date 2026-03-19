@@ -14,7 +14,7 @@ st.set_page_config(layout="wide", page_title="Editor de Rotas com Embarques")
 # Funções auxiliares
 # -----------------------------
 def haversine(p1, p2):
-    R = 6371  # km
+    R = 6371
     lat1, lon1 = map(math.radians, p1)
     lat2, lon2 = map(math.radians, p2)
 
@@ -41,13 +41,13 @@ def carregar_kml(file):
     root = tree.getroot()
 
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
-    
+
     coords_points = root.xpath("//kml:Point/kml:coordinates", namespaces=ns)
     stops = []
     for c in coords_points:
         lon, lat, *_ = c.text.strip().split(",")
         stops.append((float(lat), float(lon)))
-    
+
     coords_lines = root.xpath("//kml:LineString/kml:coordinates", namespaces=ns)
     segmentos = []
     for c in coords_lines:
@@ -56,7 +56,7 @@ def carregar_kml(file):
             lon, lat, *_ = pair.split(",")
             pontos.append((float(lat), float(lon)))
         segmentos.append(pontos)
-    
+
     return {"stops": stops, "segmentos": segmentos}
 
 def remover_colaborador(nome):
@@ -64,6 +64,32 @@ def remover_colaborador(nome):
         for stop in stops:
             if nome in stops[stop]:
                 stops[stop].remove(nome)
+
+def criar_mapa():
+    m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
+
+    for rota, dados in st.session_state["rotas"].items():
+        for segmento in dados["segmentos"]:
+            folium.PolyLine(segmento, color="red", weight=3).add_to(m)
+
+    for rota, stops_dict in st.session_state["embarques"].items():
+        for stop, colabs in stops_dict.items():
+            folium.Marker(
+                location=[stop[0], stop[1]],
+                popup=f"{rota}: {', '.join(colabs)}",
+                icon=folium.Icon(color="green", icon="bus")
+            ).add_to(m)
+
+    if not st.session_state["colaboradores"].empty:
+        cluster = MarkerCluster().add_to(m)
+        for row in st.session_state["colaboradores"].itertuples():
+            folium.Marker(
+                location=[row.LAT, row.LONG],
+                popup=row.COLABORADORES,
+                icon=folium.Icon(color="blue")
+            ).add_to(cluster)
+
+    return m
 
 # -----------------------------
 # Estado inicial
@@ -74,6 +100,10 @@ if "rotas" not in st.session_state:
     st.session_state["rotas"] = {}
 if "embarques" not in st.session_state:
     st.session_state["embarques"] = {}
+if "mapa" not in st.session_state:
+    st.session_state["mapa"] = None
+if "mapa_atualizado" not in st.session_state:
+    st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
 # Upload
@@ -84,6 +114,7 @@ uploaded_kmls = st.sidebar.file_uploader("Upload KMLs (rotas)", type=["kml"], ac
 
 if uploaded_xlsx:
     st.session_state["colaboradores"] = pd.read_excel(uploaded_xlsx, engine="openpyxl")
+    st.session_state["mapa_atualizado"] = True
 
 if uploaded_kmls:
     rotas = {}
@@ -92,6 +123,7 @@ if uploaded_kmls:
         nome = file.name.replace(".kml", "")
         rotas[nome] = dados
     st.session_state["rotas"] = rotas
+    st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
 # Correlação inicial
@@ -101,7 +133,7 @@ if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
 
     for row in st.session_state["colaboradores"].itertuples():
         rota_nome = getattr(row, "ROTA")
-        
+
         if rota_nome not in st.session_state["rotas"]:
             continue
 
@@ -118,36 +150,17 @@ if not st.session_state["colaboradores"].empty and st.session_state["rotas"]:
         embarques[rota_nome][embarque].append(getattr(row, "COLABORADORES"))
 
     st.session_state["embarques"] = embarques
+    st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# Mapa
+# Mapa (OTIMIZADO)
 # -----------------------------
-m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
-
-for rota, dados in st.session_state["rotas"].items():
-    for segmento in dados["segmentos"]:
-        folium.PolyLine(segmento, color="red", weight=3).add_to(m)
-
-for rota, stops_dict in st.session_state["embarques"].items():
-    for stop, colabs in stops_dict.items():
-        folium.Marker(
-            location=[stop[0], stop[1]],
-            popup=f"{rota}: {', '.join(colabs)}",
-            icon=folium.Icon(color="green", icon="bus")
-        ).add_to(m)
-
-if not st.session_state["colaboradores"].empty:
-    cluster = MarkerCluster().add_to(m)
-    for row in st.session_state["colaboradores"].itertuples():
-        lat, lon = float(row.LAT), float(row.LONG)
-        folium.Marker(
-            location=[lat, lon],
-            popup=row.COLABORADORES,
-            icon=folium.Icon(color="blue")
-        ).add_to(cluster)
+if st.session_state["mapa"] is None or st.session_state["mapa_atualizado"]:
+    st.session_state["mapa"] = criar_mapa()
+    st.session_state["mapa_atualizado"] = False
 
 st.title("Mapa de Rotas e Embarques")
-st_folium(m, width=1000, height=600)
+st_folium(st.session_state["mapa"], width=1000, height=600, returned_objects=[])
 
 # -----------------------------
 # Transferência
@@ -184,6 +197,7 @@ if not st.session_state["colaboradores"].empty:
                 st.session_state["embarques"][nova_rota][embarque].append(colab_nome)
 
                 df.at[idx, "ROTA"] = nova_rota
+                st.session_state["mapa_atualizado"] = True
 
                 st.success(f"{colab_nome} transferido para {nova_rota}")
 
