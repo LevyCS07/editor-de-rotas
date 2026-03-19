@@ -9,38 +9,41 @@ import math
 import io
 import random
 
-st.set_page_config(layout="wide", page_title="Editor de Rotas com Embarques")
+st.set_page_config(layout="wide", page_title="Editor de Rotas")
 
 # -----------------------------
-# CORES POR ROTA
+# UTIL
 # -----------------------------
 def gerar_cor():
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-# -----------------------------
-# Funções auxiliares
-# -----------------------------
 def haversine(p1, p2):
     R = 6371
     lat1, lon1 = map(math.radians, p1)
     lat2, lon2 = map(math.radians, p2)
-
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-
     a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-def ponto_mais_proximo(colab_coord, stops):
-    menor = None
+def ponto_mais_proximo(coord, stops):
+    return min(stops, key=lambda s: haversine(coord, s))
+
+def colaborador_mais_proximo(coord):
     menor_dist = float("inf")
-    for stop in stops:
-        d = haversine(colab_coord, stop)
+    idx_menor = None
+    melhor = None
+
+    for idx, row in st.session_state["colaboradores"].iterrows():
+        p = (float(row["LAT"]), float(row["LONG"]))
+        d = haversine(coord, p)
+
         if d < menor_dist:
-            menor = stop
             menor_dist = d
-    return menor
+            idx_menor = idx
+            melhor = row
+
+    return idx_menor, melhor, menor_dist
 
 def carregar_kml(file):
     parser = etree.XMLParser(resolve_entities=False)
@@ -49,15 +52,13 @@ def carregar_kml(file):
 
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-    coords_points = root.xpath("//kml:Point/kml:coordinates", namespaces=ns)
     stops = []
-    for c in coords_points:
+    for c in root.xpath("//kml:Point/kml:coordinates", namespaces=ns):
         lon, lat, *_ = c.text.strip().split(",")
         stops.append((float(lat), float(lon)))
 
-    coords_lines = root.xpath("//kml:LineString/kml:coordinates", namespaces=ns)
     segmentos = []
-    for c in coords_lines:
+    for c in root.xpath("//kml:LineString/kml:coordinates", namespaces=ns):
         pontos = []
         for pair in c.text.strip().split():
             lon, lat, *_ = pair.split(",")
@@ -67,140 +68,161 @@ def carregar_kml(file):
     return {"stops": stops, "segmentos": segmentos}
 
 def remover_colaborador(nome):
-    for rota, stops in st.session_state["embarques"].items():
-        for stop in stops:
-            if nome in stops[stop]:
-                stops[stop].remove(nome)
+    for rota in st.session_state["embarques"]:
+        for stop in st.session_state["embarques"][rota]:
+            if nome in st.session_state["embarques"][rota][stop]:
+                st.session_state["embarques"][rota][stop].remove(nome)
 
 # -----------------------------
 # MAPA
 # -----------------------------
 def criar_mapa():
     m = folium.Map(location=[-3.119, -60.021], zoom_start=12)
-
-    rotas_visiveis = st.session_state.get("rotas_visiveis", [])
+    visiveis = st.session_state["rotas_visiveis"]
 
     for rota, dados in st.session_state["rotas"].items():
-        if rota not in rotas_visiveis:
+        if rota not in visiveis:
             continue
+        cor = st.session_state["cores_rotas"][rota]
+        for seg in dados["segmentos"]:
+            folium.PolyLine(seg, color=cor, weight=4).add_to(m)
 
-        cor = st.session_state["cores_rotas"].get(rota, "#FF0000")
-
-        for segmento in dados["segmentos"]:
-            folium.PolyLine(segmento, color=cor, weight=4).add_to(m)
-
-    for rota, stops_dict in st.session_state["embarques"].items():
-        if rota not in rotas_visiveis:
+    for rota, stops in st.session_state["embarques"].items():
+        if rota not in visiveis:
             continue
-
-        for stop, colabs in stops_dict.items():
+        for stop, colabs in stops.items():
             folium.Marker(
-                location=[stop[0], stop[1]],
+                location=stop,
                 popup=f"{rota}: {', '.join(colabs)}",
-                icon=folium.Icon(color="green", icon="bus")
+                icon=folium.Icon(color="green")
             ).add_to(m)
 
-    if not st.session_state["colaboradores"].empty:
-        cluster = MarkerCluster().add_to(m)
-
-        for row in st.session_state["colaboradores"].itertuples():
-            if row.ROTA not in rotas_visiveis:
-                continue
-
-            folium.Marker(
-                location=[row.LAT, row.LONG],
-                popup=f"{row.COLABORADORES} ({row.ROTA})",
-                icon=folium.Icon(color="blue")
-            ).add_to(cluster)
+    cluster = MarkerCluster().add_to(m)
+    for _, row in st.session_state["colaboradores"].iterrows():
+        if row["ROTA"] not in visiveis:
+            continue
+        folium.Marker(
+            location=[row["LAT"], row["LONG"]],
+            popup=f"{row['COLABORADORES']} ({row['ROTA']})",
+            icon=folium.Icon(color="blue")
+        ).add_to(cluster)
 
     return m
 
 # -----------------------------
-# ESTADO
+# STATE
 # -----------------------------
-for key, default in {
+defaults = {
     "colaboradores": pd.DataFrame(),
     "rotas": {},
     "embarques": {},
+    "cores_rotas": {},
+    "rotas_visiveis": [],
     "mapa": None,
     "mapa_atualizado": True,
-    "rotas_visiveis": [],
-    "cores_rotas": {},
-    "modo_transferencia": False
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    "modo_transferencia": False,
+    "dados_processados": False
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # -----------------------------
-# SIDEBAR
+# UPLOAD
 # -----------------------------
-st.sidebar.header("📂 Upload")
+st.sidebar.header("Upload")
 
 xlsx = st.sidebar.file_uploader("Colaboradores", type=["xlsx"])
 kmls = st.sidebar.file_uploader("Rotas", type=["kml"], accept_multiple_files=True)
 
 if xlsx:
     st.session_state["colaboradores"] = pd.read_excel(xlsx)
-    st.session_state["mapa_atualizado"] = True
+    st.session_state["dados_processados"] = False
 
 if kmls:
-    rotas = {}
-    cores = {}
     for f in kmls:
         nome = f.name.replace(".kml", "")
-        rotas[nome] = carregar_kml(f)
-        cores[nome] = gerar_cor()
+        st.session_state["rotas"][nome] = carregar_kml(f)
 
-    st.session_state["rotas"] = rotas
-    st.session_state["cores_rotas"] = cores
-    st.session_state["rotas_visiveis"] = list(rotas.keys())
+        if nome not in st.session_state["cores_rotas"]:
+            st.session_state["cores_rotas"][nome] = gerar_cor()
+
+    st.session_state["rotas_visiveis"] = list(st.session_state["rotas"].keys())
+    st.session_state["dados_processados"] = False
+
+# -----------------------------
+# PROCESSAMENTO
+# -----------------------------
+if (
+    not st.session_state["colaboradores"].empty
+    and st.session_state["rotas"]
+    and not st.session_state["dados_processados"]
+):
+    embarques = {}
+
+    for _, row in st.session_state["colaboradores"].iterrows():
+        rota = row["ROTA"]
+        if rota not in st.session_state["rotas"]:
+            continue
+
+        coord = (row["LAT"], row["LONG"])
+        stops = st.session_state["rotas"][rota]["stops"]
+
+        if not stops:
+            continue
+
+        p = ponto_mais_proximo(coord, stops)
+
+        embarques.setdefault(rota, {})
+        embarques[rota].setdefault(p, [])
+        embarques[rota][p].append(row["COLABORADORES"])
+
+    st.session_state["embarques"] = embarques
+    st.session_state["dados_processados"] = True
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# FILTRO ROTAS
+# FILTRO
 # -----------------------------
-st.sidebar.header("👁️ Rotas visíveis")
-
-visiveis = st.sidebar.multiselect(
-    "Rotas",
+vis = st.sidebar.multiselect(
+    "Rotas visíveis",
     list(st.session_state["rotas"].keys()),
     default=st.session_state["rotas_visiveis"]
 )
 
-if set(visiveis) != set(st.session_state["rotas_visiveis"]):
-    st.session_state["rotas_visiveis"] = visiveis
+if set(vis) != set(st.session_state["rotas_visiveis"]):
+    st.session_state["rotas_visiveis"] = vis
     st.session_state["mapa_atualizado"] = True
 
 # -----------------------------
-# BOTÃO TRANSFERÊNCIA
+# MODO TRANSFERÊNCIA
 # -----------------------------
-st.sidebar.header("⚡ Modo")
-
 if st.sidebar.button("TRANSFERÊNCIA ON/OFF"):
     st.session_state["modo_transferencia"] = not st.session_state["modo_transferencia"]
 
-st.sidebar.write("Status:", "🟢 ON" if st.session_state["modo_transferencia"] else "🔴 OFF")
+st.sidebar.write("Modo:", "🟢 ON" if st.session_state["modo_transferencia"] else "🔴 OFF")
 
 # -----------------------------
-# PAINEL DE ROTAS
+# PAINEL
 # -----------------------------
-st.sidebar.header("📊 Ocupação das rotas")
+st.sidebar.header("Rotas")
 
-contagem = {}
-for _, row in st.session_state["colaboradores"].iterrows():
-    contagem[row["ROTA"]] = contagem.get(row["ROTA"], 0) + 1
+cont = {}
+for _, r in st.session_state["colaboradores"].iterrows():
+    cont[r["ROTA"]] = cont.get(r["ROTA"], 0) + 1
 
-for rota, qtd in contagem.items():
-    st.sidebar.write(f"{rota}: {qtd} pessoas")
+for r, q in cont.items():
+    st.sidebar.write(f"{r}: {q}")
 
 # -----------------------------
-# MAPA GRANDE
+# MAPA
 # -----------------------------
 if st.session_state["mapa"] is None or st.session_state["mapa_atualizado"]:
     st.session_state["mapa"] = criar_mapa()
     st.session_state["mapa_atualizado"] = False
 
 st.title("Mapa de Rotas")
+
 map_data = st_folium(
     st.session_state["mapa"],
     width=1400,
@@ -209,10 +231,36 @@ map_data = st_folium(
 )
 
 # -----------------------------
-# CLIQUE NO MAPA (BASE)
+# CLIQUE + TRANSFERÊNCIA
 # -----------------------------
-if st.session_state["modo_transferencia"] and map_data["last_clicked"]:
+if st.session_state["modo_transferencia"] and map_data.get("last_clicked"):
+
     lat = map_data["last_clicked"]["lat"]
     lon = map_data["last_clicked"]["lng"]
 
-    st.write(f"📍 Clique detectado: {lat}, {lon}")
+    idx, colab, dist = colaborador_mais_proximo((lat, lon))
+
+    if colab is not None and dist < 0.5:
+
+        st.sidebar.subheader("Selecionado")
+        st.sidebar.write(colab["COLABORADORES"])
+        st.sidebar.write("Rota:", colab["ROTA"])
+
+        nova = st.sidebar.selectbox("Nova rota", list(st.session_state["rotas"].keys()))
+
+        if st.sidebar.button("Confirmar"):
+
+            remover_colaborador(colab["COLABORADORES"])
+
+            coord = (colab["LAT"], colab["LONG"])
+            stops = st.session_state["rotas"][nova]["stops"]
+            p = ponto_mais_proximo(coord, stops)
+
+            st.session_state["embarques"].setdefault(nova, {})
+            st.session_state["embarques"][nova].setdefault(p, [])
+            st.session_state["embarques"][nova][p].append(colab["COLABORADORES"])
+
+            st.session_state["colaboradores"].at[idx, "ROTA"] = nova
+            st.session_state["mapa_atualizado"] = True
+
+            st.success("Transferido!")
