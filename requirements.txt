@@ -1,7 +1,10 @@
 streamlit
 pandas
+numpy
+openpyxl
 openrouteservice
+scikit-learn
 lxml
 folium
-openpyxl
 streamlit-folium
+requests
