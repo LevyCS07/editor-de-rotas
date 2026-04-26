@@ -1,7 +1,7 @@
 streamlit
 pandas
-folium
-streamlit-folium
+openrouteservice
 lxml
+folium
 openpyxl
-simplekml
+streamlit-folium
