@@ -200,12 +200,10 @@ def clusterizar_afunilado(df, destino, capacidades, client):
         if len(atribuidos) >= n_total:
             break
 
-        membros = []
-        tempo_acum = 0
+        membros_idx = []     # índices do DataFrame
+        membros_coords = []  # tuplas (lat, lon) para chamadas ORS
         candidatos = df[~df.index.isin(atribuidos)].copy()
 
-        # Ponto de referência angular: centróide dos candidatos mais distantes (extremo da rota)
-        # Inicia pela pessoa mais distante ainda não atribuída
         if candidatos.empty:
             break
 
@@ -215,7 +213,6 @@ def clusterizar_afunilado(df, destino, capacidades, client):
         # Tolerância angular: quanto mais rotas, fatias mais estreitas
         tolerancia_angular = max(30, 360 / n_rotas)
 
-        # Seleciona candidatos dentro da fatia angular + absorve quem está no caminho
         def delta_angular(a1, a2):
             d = abs(a1 - a2) % 360
             return min(d, 360 - d)
@@ -232,29 +229,33 @@ def clusterizar_afunilado(df, destino, capacidades, client):
         candidatos_fatia = candidatos_fatia.sort_values('DIST_KM', ascending=False)
 
         for idx, row in candidatos_fatia.iterrows():
-            if len(membros) >= cap:
+            if len(membros_idx) >= cap:
                 break
             if idx in atribuidos:
                 continue
 
-            # Testa se adicionar este ponto não ultrapassa 90 min
-            teste = membros + [(row['LAT E'], row['LONG E'])]
-            if len(teste) >= 2:
-                tempo_est, ok = estimar_tempo_ors(client, teste, destino)
+            # Testa tempo com coordenadas corretas (tuplas lat/lon)
+            coord_nova = (float(row['LAT E']), float(row['LONG E']))
+            teste_coords = membros_coords + [coord_nova]
+
+            if len(teste_coords) >= 2:
+                tempo_est, ok = estimar_tempo_ors(client, teste_coords, destino)
                 if ok and tempo_est is not None:
                     if tempo_est > MAX_TEMPO_MIN:
-                        # Registra alerta mas não descarta ainda
                         alertas.append({
                             'tipo': 'tempo',
                             'rota': rota_idx + 1,
                             'colaborador': row['COLABORADOR'],
                             'tempo_est': round(tempo_est, 1)
                         })
-                        # Não adiciona — respeita tempo
-                        continue
+                        continue  # não adiciona, respeita limite de tempo
 
-            membros.append(idx)
+            membros_idx.append(idx)
+            membros_coords.append(coord_nova)
             atribuidos.add(idx)
+
+        # Renomeia para manter compatibilidade com o restante do código
+        membros = membros_idx
 
         # Verifica taxa mínima
         taxa = len(membros) / cap if cap > 0 else 0
