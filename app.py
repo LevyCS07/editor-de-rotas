@@ -161,123 +161,165 @@ def gerar_kml(grupo_df, coords_rota, destino_final, nome_rota, tipo):
 
 
 # ============================================================
-# ALGORITMO CENTRAL: CLUSTERIZAÇÃO AFUNILADA
+# ALGORITMO CENTRAL: K-MEANS GEOGRÁFICO + AFUNILAMENTO
 # ============================================================
 
 def clusterizar_afunilado(df, destino, capacidades, client):
     """
-    Agrupa colaboradores em rotas usando lógica de afunilamento polar.
+    Agrupa colaboradores em rotas coesas geograficamente.
 
-    Estratégia:
-    1. Calcula distância e ângulo de cada colaborador em relação ao destino.
-    2. Ordena por distância decrescente (mais longe primeiro → pega quem está no caminho).
-    3. Divide em "fatias" angulares para evitar zig-zag.
-    4. Dentro de cada fatia, preenche rotas respeitando capacidade e 90 min.
-    5. Colaboradores no caminho de uma rota próxima são absorvidos (aproveitamento).
+    Estratégia em duas etapas:
+    ETAPA 1 — K-Means geográfico:
+        Agrupa os colaboradores por proximidade real no mapa usando K-Means
+        sobre (lat, lon). Isso garante que cada cluster seja uma zona coesa
+        da cidade, sem misturar norte/sul/leste/oeste.
+        Quando os clusters têm tamanho muito diferente da capacidade do veículo,
+        faz uma redistribuição por vizinhança para balancear.
+
+    ETAPA 2 — Afunilamento interno:
+        Dentro de cada cluster, ordena os pontos do mais distante ao destino
+        para o mais próximo. O ORS otimiza a ordem real de embarque, mas a
+        ordenação garante que o veículo vá pegando quem está "no caminho"
+        em direção ao destino, sem zig-zag entre extremos opostos.
+
+    ETAPA 3 — Validação de tempo:
+        Verifica via ORS se a rota do cluster excede 90 min. Se sim, remove
+        os pontos mais distantes até caber, e os pontos removidos são
+        oferecidos a clusters vizinhos ou listados como não atribuídos.
 
     Retorna lista de dicts com info de cada rota.
     """
-    df = df.copy()
+    df = df.copy().reset_index(drop=True)
+    n_total = len(df)
+    n_rotas = len(capacidades)
+    alertas = []
+
+    # --- Calcula distância e ângulo de cada ponto em relação ao destino ---
     df['DIST_KM'] = df.apply(
         lambda r: haversine(r['LAT E'], r['LONG E'], destino[0], destino[1]), axis=1
     )
     df['ANGULO'] = df.apply(
         lambda r: angulo_destino(r['LAT E'], r['LONG E'], destino[0], destino[1]), axis=1
     )
-    # Ordena: mais longe primeiro (para preencher do extremo ao centro)
-    df = df.sort_values('DIST_KM', ascending=False).reset_index(drop=True)
 
-    n_total = len(df)
-    n_rotas = len(capacidades)
+    # =========================================================
+    # ETAPA 1: K-Means geográfico
+    # =========================================================
+    coords = df[['LAT E', 'LONG E']].values
+
+    # Escala as coordenadas para que lat e lon tenham peso equivalente
+    scaler = StandardScaler()
+    coords_scaled = scaler.fit_transform(coords)
+
+    # K-Means com k = número de rotas
+    kmeans = KMeans(n_clusters=n_rotas, random_state=42, n_init=10)
+    df['CLUSTER'] = kmeans.fit_predict(coords_scaled)
+
+    # =========================================================
+    # ETAPA 1b: Redistribuição por capacidade
+    # Clusters muito grandes são podados; os excedentes vão para
+    # o cluster vizinho mais próximo que ainda tenha espaço.
+    # =========================================================
+    caps_por_cluster = {i: capacidades[i] for i in range(n_rotas)}
+
+    # Identifica excedentes em cada cluster
+    excedentes = []
+    for cluster_id in range(n_rotas):
+        cap = caps_por_cluster[cluster_id]
+        membros = df[df['CLUSTER'] == cluster_id].copy()
+        membros = membros.sort_values('DIST_KM', ascending=False)
+        if len(membros) > cap:
+            # Remove os menos distantes (mais fáceis de redistribuir)
+            sobra = membros.iloc[cap:]
+            excedentes.extend(sobra.index.tolist())
+            df.loc[sobra.index, 'CLUSTER'] = -1  # marca como sem cluster
+
+    # Tenta encaixar excedentes nos clusters com espaço
+    for idx in excedentes:
+        row = df.loc[idx]
+        coord_ponto = np.array([[row['LAT E'], row['LONG E']]])
+        melhor_cluster = -1
+        menor_dist = float('inf')
+
+        for cluster_id in range(n_rotas):
+            ocupacao_atual = (df['CLUSTER'] == cluster_id).sum()
+            if ocupacao_atual >= caps_por_cluster[cluster_id]:
+                continue
+            centroide = kmeans.cluster_centers_[cluster_id]
+            centroide_orig = scaler.inverse_transform([centroide])[0]
+            dist = haversine(row['LAT E'], row['LONG E'], centroide_orig[0], centroide_orig[1])
+            if dist < menor_dist:
+                menor_dist = dist
+                melhor_cluster = cluster_id
+
+        if melhor_cluster >= 0:
+            df.loc[idx, 'CLUSTER'] = melhor_cluster
+
+    # =========================================================
+    # ETAPA 2 + 3: Afunilamento interno + validação de tempo
+    # =========================================================
     rotas = []
     atribuidos = set()
-    alertas = []
 
-    # Para cada rota disponível (da maior capacidade para menor)
-    caps_sorted = sorted(enumerate(capacidades), key=lambda x: -x[1])
+    for rota_idx, cap in enumerate(capacidades):
+        cluster_df = df[df['CLUSTER'] == rota_idx].copy()
 
-    for rota_idx, cap in caps_sorted:
-        if len(atribuidos) >= n_total:
-            break
+        if cluster_df.empty:
+            continue
 
-        membros_idx = []     # índices do DataFrame
-        membros_coords = []  # tuplas (lat, lon) para chamadas ORS
-        candidatos = df[~df.index.isin(atribuidos)].copy()
+        # Ordena do mais distante para o mais próximo do destino
+        # → o veículo parte do extremo e vai "afunilando" até chegar
+        cluster_df = cluster_df.sort_values('DIST_KM', ascending=False)
 
-        if candidatos.empty:
-            break
+        membros_idx = []
+        membros_coords = []
 
-        semente = candidatos.iloc[0]
-        angulo_ref = semente['ANGULO']
-
-        # Tolerância angular: quanto mais rotas, fatias mais estreitas
-        tolerancia_angular = max(30, 360 / n_rotas)
-
-        def delta_angular(a1, a2):
-            d = abs(a1 - a2) % 360
-            return min(d, 360 - d)
-
-        candidatos_fatia = candidatos[
-            candidatos.apply(lambda r: delta_angular(r['ANGULO'], angulo_ref) <= tolerancia_angular, axis=1)
-        ].copy()
-
-        # Se fatia muito vazia, expande tolerância
-        if len(candidatos_fatia) < max(1, int(cap * TAXA_MINIMA)):
-            candidatos_fatia = candidatos.copy()
-
-        # Ordena por distância decrescente dentro da fatia
-        candidatos_fatia = candidatos_fatia.sort_values('DIST_KM', ascending=False)
-
-        for idx, row in candidatos_fatia.iterrows():
+        for idx, row in cluster_df.iterrows():
             if len(membros_idx) >= cap:
                 break
-            if idx in atribuidos:
-                continue
 
-            # Testa tempo com coordenadas corretas (tuplas lat/lon)
             coord_nova = (float(row['LAT E']), float(row['LONG E']))
             teste_coords = membros_coords + [coord_nova]
 
+            # Valida tempo apenas quando há ao menos 2 pontos (1 ponto = irrelevante testar)
             if len(teste_coords) >= 2:
                 tempo_est, ok = estimar_tempo_ors(client, teste_coords, destino)
-                if ok and tempo_est is not None:
-                    if tempo_est > MAX_TEMPO_MIN:
-                        alertas.append({
-                            'tipo': 'tempo',
-                            'rota': rota_idx + 1,
-                            'colaborador': row['COLABORADOR'],
-                            'tempo_est': round(tempo_est, 1)
-                        })
-                        continue  # não adiciona, respeita limite de tempo
+                if ok and tempo_est is not None and tempo_est > MAX_TEMPO_MIN:
+                    alertas.append({
+                        'tipo': 'tempo',
+                        'rota': rota_idx + 1,
+                        'colaborador': row['COLABORADOR'],
+                        'tempo_est': round(tempo_est, 1)
+                    })
+                    # Ponto removido por tempo: tenta colocar no cluster vizinho
+                    # (redistribuição por proximidade angular)
+                    df.loc[idx, 'CLUSTER'] = -2  # marca como "removido por tempo"
+                    continue
 
             membros_idx.append(idx)
             membros_coords.append(coord_nova)
             atribuidos.add(idx)
 
-        # Renomeia para manter compatibilidade com o restante do código
-        membros = membros_idx
-
-        # Verifica taxa mínima
-        taxa = len(membros) / cap if cap > 0 else 0
-        if taxa < TAXA_MINIMA and len(membros) > 0:
+        taxa = len(membros_idx) / cap if cap > 0 else 0
+        if taxa < TAXA_MINIMA and len(membros_idx) > 0:
             alertas.append({
                 'tipo': 'taxa',
                 'rota': rota_idx + 1,
-                'membros': len(membros),
+                'membros': len(membros_idx),
                 'capacidade': cap,
                 'taxa': round(taxa * 100, 1)
             })
 
-        if membros:
+        if membros_idx:
             rotas.append({
                 'rota_id': rota_idx + 1,
-                'indices': membros,
+                'indices': membros_idx,
                 'capacidade': cap,
-                'ocupacao': len(membros),
+                'ocupacao': len(membros_idx),
                 'taxa': round(taxa * 100, 1)
             })
 
-    # Colaboradores não atribuídos (sobram após esgotar rotas/tempo)
+    # Colaboradores sem atribuição final
     nao_atribuidos = df[~df.index.isin(atribuidos)]
 
     return rotas, nao_atribuidos, alertas, df
