@@ -4,10 +4,8 @@ numpy
 openpyxl
 openrouteservice
 scikit-learn
+shapely
 lxml
 folium
 streamlit-folium
 requests
-geopandas==0.14.4
-shapely==2.0.4
-pyogrio
