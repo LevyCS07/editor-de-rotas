@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import openrouteservice
-import geopandas as gpd
-from shapely.geometry import Point
+import json
+from shapely.geometry import Point, shape
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from lxml import etree
@@ -59,31 +59,44 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 
-def dist_bairros(gdf, id_a, id_b):
-    ca = gdf.loc[id_a].geometry.centroid
-    cb = gdf.loc[id_b].geometry.centroid
-    return haversine(ca.y, ca.x, cb.y, cb.x)
+def dist_bairros(bairros, id_a, id_b):
+    ba = bairros[id_a]
+    bb = bairros[id_b]
+    return haversine(ba["centroid_lat"], ba["centroid_lon"],
+                     bb["centroid_lat"], bb["centroid_lon"])
 
 
 @st.cache_data(show_spinner=False)
 def carregar_bairros():
-    gdf = gpd.read_file(GEOJSON_PATH)
-    gdf = gdf.set_crs("EPSG:4326") if gdf.crs is None else gdf.to_crs("EPSG:4326")
-    return gdf
+    """Carrega o GeoJSON como lista de dicts com geometry shapely e propriedades."""
+    with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
+        geojson = json.load(f)
+    bairros = []
+    for feat in geojson["features"]:
+        props = feat.get("properties", {})
+        nome  = (props.get("NM_BAIRRO") or props.get("nome") or
+                 props.get("name") or f"B{len(bairros)}")
+        geom  = shape(feat["geometry"])
+        centroid = geom.centroid
+        bairros.append({
+            "idx":      len(bairros),
+            "nome":     str(nome),
+            "geometry": geom,
+            "centroid_lat": centroid.y,
+            "centroid_lon": centroid.x,
+        })
+    return bairros
 
 
-def atribuir_bairro(lat, lon, gdf):
+def atribuir_bairro(lat, lon, bairros):
     """Point-in-polygon; fallback ao centróide mais próximo."""
     pt = Point(lon, lat)
-    for idx, row in gdf.iterrows():
-        if row.geometry.contains(pt):
-            nome = row.get("NM_BAIRRO") or row.get("nome") or row.get("name") or f"B{idx}"
-            return idx, str(nome)
-    dists   = gdf.geometry.centroid.apply(lambda c: haversine(lat, lon, c.y, c.x))
-    idx_prx = dists.idxmin()
-    row     = gdf.loc[idx_prx]
-    nome    = row.get("NM_BAIRRO") or row.get("nome") or row.get("name") or f"B{idx_prx}"
-    return idx_prx, str(nome)
+    for b in bairros:
+        if b["geometry"].contains(pt):
+            return b["idx"], b["nome"]
+    # Fallback: centróide mais próximo
+    melhor = min(bairros, key=lambda b: haversine(lat, lon, b["centroid_lat"], b["centroid_lon"]))
+    return melhor["idx"], melhor["nome"]
 
 
 def estimar_tempo_ors(client, waypoints, destino):
@@ -167,7 +180,7 @@ def _nome_rota(bairros, idx):
     return f"ROTA_{idx+1:02d} — {' / '.join(bairros[:2])}"
 
 
-def clusterizar_por_bairros(df, destino, capacidades, client, gdf):
+def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
     """
     Etapa 1 — Point-in-polygon:
       Cada colaborador é mapeado ao polígono real do seu bairro.
@@ -191,7 +204,7 @@ def clusterizar_por_bairros(df, destino, capacidades, client, gdf):
     # ── Etapa 1: bairro de cada colaborador ──────────────────
     b_idxs, b_nomes = [], []
     for _, row in df.iterrows():
-        bi, bn = atribuir_bairro(float(row['LAT E']), float(row['LONG E']), gdf)
+        bi, bn = atribuir_bairro(float(row['LAT E']), float(row['LONG E']), bairros)
         b_idxs.append(bi)
         b_nomes.append(bn)
 
@@ -216,7 +229,7 @@ def clusterizar_por_bairros(df, destino, capacidades, client, gdf):
         d = []
         for a in g1:
             for b in g2:
-                try:   d.append(dist_bairros(gdf, a, b))
+                try:   d.append(dist_bairros(bairros, a, b))
                 except: d.append(999.0)
         return min(d) if d else 999.0
 
