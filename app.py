@@ -538,19 +538,40 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
             for rid in cap_map
         }
 
-    cap_map  = {r['rota_id']: r['capacidade'] for r in rotas_orig}
+    cap_map  = {int(r['rota_id']): int(r['capacidade']) for r in rotas_orig}
     metricas = calcular_metricas(atribuicao, cap_map)
 
-    # Opções de rotas para o dropdown JS
+    # Opções de rotas para o dropdown JS — tudo tipos nativos
     opcoes_rotas = [
-        {"rota_id": rid, "label": f"Rota {rid} — {rota_info[rid]['nome']} "
-                                  f"({metricas[rid]['ocupacao']}/{metricas[rid]['cap']})"}
+        {"rota_id": int(rid),
+         "label":   (f"Rota {rid} — {rota_info[rid]['nome']} "
+                     f"({metricas[rid]['ocupacao']}/{metricas[rid]['cap']})")}
         for rid in sorted(rota_info)
     ]
 
+    # cap_map com chaves string para o JS
+    cap_map_js = {str(int(k)): int(v) for k, v in cap_map.items()}
+
+    # Encoder seguro para tipos numpy
+    import numpy as np
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, np.integer): return int(o)
+            if isinstance(o, np.floating): return float(o)
+            if isinstance(o, np.ndarray): return o.tolist()
+            return super().default(o)
+
+    def safe_json(obj):
+        return json.dumps(obj, cls=NumpyEncoder)
+
+    pontos_json = safe_json(pontos_js)
+    opcoes_json = safe_json(opcoes_rotas)
+    cores_json  = safe_json(CORES)
+    capmap_json = safe_json(cap_map_js)
+
     # Centro do mapa
-    lats_all = [p['lat'] for p in pontos_js]
-    lons_all = [p['lon'] for p in pontos_js]
+    lats_all   = [p['lat'] for p in pontos_js]
+    lons_all   = [p['lon'] for p in pontos_js]
     centro_lat = sum(lats_all) / len(lats_all)
     centro_lon = sum(lons_all) / len(lons_all)
 
@@ -645,10 +666,10 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
 </div>
 
 <script>
-const PONTOS   = {json.dumps(pontos_js)};
-const OPCOES   = {json.dumps(opcoes_rotas)};
-const CORES    = {json.dumps(CORES)};
-const CAP_MAP  = {json.dumps({str(k): v for k, v in cap_map.items()})};
+const PONTOS   = {pontos_json};
+const OPCOES   = {opcoes_json};
+const CORES    = {cores_json};
+const CAP_MAP  = {capmap_json};
 const DESTINO  = [{destino_final[0]}, {destino_final[1]}];
 
 // Estado editável
@@ -796,7 +817,7 @@ function confirmar() {{
     with col_edit:
         atrib_json = st.text_area(
             "Atribuição (JSON gerado ao confirmar)",
-            value=json.dumps({str(k): v for k, v in st.session_state["atribuicao"].items()}),
+            value=json.dumps({str(int(k)): int(v) for k, v in st.session_state["atribuicao"].items()}),
             height=80, label_visibility="collapsed"
         )
     with col_btn:
