@@ -10,22 +10,18 @@ from lxml import etree
 import folium
 from streamlit_folium import st_folium
 import io
-import requests
-import time
 import math
 import os
 
 # ============================================================
 # CONFIGURAÇÕES
 # ============================================================
-ORS_API_KEY    = st.secrets["ORS_API_KEY"]
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+ORS_API_KEY = st.secrets["ORS_API_KEY"]
 
-TAXA_MINIMA   = 0.60   # 60% de ocupação mínima por rota
-MAX_TEMPO_MIN = 90     # minutos máximos por rota
-MAX_WAYPOINTS = 48     # limite seguro da API ORS
+TAXA_MINIMA   = 0.60
+MAX_TEMPO_MIN = 90
+MAX_WAYPOINTS = 48
 
-# Caminho fixo no repositório (raiz do projeto)
 GEOJSON_PATH = os.path.join(os.path.dirname(__file__), "BAIRROS_MANAUS.geojson")
 
 st.set_page_config(page_title="Roteamento Inteligente", page_icon="🚌", layout="wide")
@@ -68,7 +64,6 @@ def dist_bairros(bairros, id_a, id_b):
 
 @st.cache_data(show_spinner=False)
 def carregar_bairros():
-    """Carrega o GeoJSON como lista de dicts com geometry shapely e propriedades."""
     with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
         geojson = json.load(f)
     bairros = []
@@ -76,12 +71,12 @@ def carregar_bairros():
         props = feat.get("properties", {})
         nome  = (props.get("NM_BAIRRO") or props.get("nome") or
                  props.get("name") or f"B{len(bairros)}")
-        geom  = shape(feat["geometry"])
+        geom     = shape(feat["geometry"])
         centroid = geom.centroid
         bairros.append({
-            "idx":      len(bairros),
-            "nome":     str(nome),
-            "geometry": geom,
+            "idx":          len(bairros),
+            "nome":         str(nome),
+            "geometry":     geom,
             "centroid_lat": centroid.y,
             "centroid_lon": centroid.x,
         })
@@ -89,12 +84,10 @@ def carregar_bairros():
 
 
 def atribuir_bairro(lat, lon, bairros):
-    """Point-in-polygon; fallback ao centróide mais próximo."""
     pt = Point(lon, lat)
     for b in bairros:
         if b["geometry"].contains(pt):
             return b["idx"], b["nome"]
-    # Fallback: centróide mais próximo
     melhor = min(bairros, key=lambda b: haversine(lat, lon, b["centroid_lat"], b["centroid_lon"]))
     return melhor["idx"], melhor["nome"]
 
@@ -110,27 +103,6 @@ def estimar_tempo_ors(client, waypoints, destino):
         return res['features'][0]['properties']['summary']['duration'] / 60, True
     except Exception:
         return None, False
-
-
-@st.cache_data(show_spinner=False)
-def obter_endereco_google(lat: float, lon: float):
-    url    = "https://maps.googleapis.com/maps/api/geocode/json"
-    params = {"latlng": f"{lat},{lon}", "key": GOOGLE_API_KEY}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data["results"]:
-                comps = data["results"][0]["address_components"]
-                rua = bairro = ""
-                for c in comps:
-                    if "route" in c["types"]:         rua   = c["long_name"]
-                    if "sublocality" in c["types"] or "neighborhood" in c["types"]:
-                        bairro = c["long_name"]
-                return rua, bairro
-    except Exception:
-        pass
-    return "Não encontrado", "Não encontrado"
 
 
 def gerar_kml(grupo_df, coords_rota, destino_final, nome_rota, tipo):
@@ -174,29 +146,13 @@ def gerar_kml(grupo_df, coords_rota, destino_final, nome_rota, tipo):
 # ALGORITMO: AGRUPAMENTO POR BAIRROS + AFUNILAMENTO
 # ============================================================
 
-def _nome_rota(bairros, idx):
-    if not bairros:
+def _nome_rota(bairros_nomes, idx):
+    if not bairros_nomes:
         return f"ROTA_{idx+1:02d}"
-    return f"ROTA_{idx+1:02d} — {' / '.join(bairros[:2])}"
+    return f"ROTA_{idx+1:02d} — {' / '.join(bairros_nomes[:2])}"
 
 
 def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
-    """
-    Etapa 1 — Point-in-polygon:
-      Cada colaborador é mapeado ao polígono real do seu bairro.
-
-    Etapa 2 — Agrupamento de bairros em rotas:
-      Bairros pequenos (< min_grupo) são mesclados com o vizinho
-      mais próximo. Bairros grandes demais são divididos via K-Means
-      interno. O resultado são grupos geograficamente coesos.
-
-    Etapa 3 — Afunilamento interno:
-      Dentro de cada grupo-rota, colaboradores ordenados do mais
-      distante ao destino para o mais próximo.
-
-    Etapa 4 — Validação de tempo ORS:
-      Pontos que excedam 90 min são sinalizados para decisão manual.
-    """
     df      = df.copy().reset_index(drop=True)
     n_rotas = len(capacidades)
     alertas = []
@@ -215,11 +171,10 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
     )
 
     # ── Etapa 2: monta grupos de bairros ─────────────────────
-    contagem    = df.groupby('BAIRRO_IDX').size().to_dict()
-    cap_ref     = int(np.mean(capacidades))
-    min_grupo   = max(1, int(cap_ref * TAXA_MINIMA))
+    contagem  = df.groupby('BAIRRO_IDX').size().to_dict()
+    cap_ref   = int(np.mean(capacidades))
+    min_grupo = max(1, int(cap_ref * TAXA_MINIMA))
 
-    # Cada bairro começa como grupo próprio
     grupos = [[b] for b in contagem]
 
     def tam(g):
@@ -229,7 +184,7 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
         d = []
         for a in g1:
             for b in g2:
-                try:   d.append(dist_bairros(bairros, a, b))
+                try:    d.append(dist_bairros(bairros, a, b))
                 except: d.append(999.0)
         return min(d) if d else 999.0
 
@@ -238,17 +193,16 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
         pequenos = [g for g in grupos if tam(g) < min_grupo]
         if not pequenos:
             break
-        g_p   = pequenos[0]
+        g_p    = pequenos[0]
         outros = [g for g in grupos if g is not g_p]
         if not outros:
             break
-        # Escolhe o vizinho mais próximo que não gere super-grupo (>1.5× cap_ref)
         candidatos = [g for g in outros if tam(g) + tam(g_p) <= cap_ref * 1.5]
         alvo = min(candidatos or outros, key=lambda g: dist_g(g_p, g))
         grupos = [g for g in grupos if g is not g_p and g is not alvo]
         grupos.append(g_p + alvo)
 
-    # Reduz até n_rotas grupos mesclando os mais próximos entre si
+    # Reduz até n_rotas mesclando os mais próximos
     while len(grupos) > n_rotas:
         menor_d, par = float('inf'), (0, 1)
         for i in range(len(grupos)):
@@ -261,31 +215,27 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
         grupos = [g for k, g in enumerate(grupos) if k not in (i, j)]
         grupos.append(merged)
 
-    # Completa com grupos vazios se necessário
     while len(grupos) < n_rotas:
         grupos.append([])
 
-    # Mapeia colaboradores para grupo-rota
     df['GRUPO_ROTA'] = -1
     for ri, grupo in enumerate(grupos):
         df.loc[df['BAIRRO_IDX'].isin(grupo), 'GRUPO_ROTA'] = ri
 
     # ── Sub-divisão de grupos grandes via K-Means ─────────────
     df['CLUSTER_FINAL'] = df['GRUPO_ROTA'].copy()
-    proximos_clusters   = len(grupos)  # contador para novos clusters
+    proximos_clusters   = len(grupos)
 
     for ri, cap in enumerate(capacidades):
         idxs_grupo = df[df['GRUPO_ROTA'] == ri].index.tolist()
         if len(idxs_grupo) <= cap:
             continue
-
-        n_sub = math.ceil(len(idxs_grupo) / cap)
-        coords_s  = df.loc[idxs_grupo, ['LAT E', 'LONG E']].values
-        scaler    = StandardScaler()
-        km        = KMeans(n_clusters=n_sub, random_state=42, n_init=10)
+        n_sub      = math.ceil(len(idxs_grupo) / cap)
+        coords_s   = df.loc[idxs_grupo, ['LAT E', 'LONG E']].values
+        scaler     = StandardScaler()
+        km         = KMeans(n_clusters=n_sub, random_state=42, n_init=10)
         sub_labels = km.fit_predict(scaler.fit_transform(coords_s))
 
-        # Primeiro sub-cluster mantém o id original
         for sub_id in range(n_sub):
             sub_idxs = [idxs_grupo[k] for k, s in enumerate(sub_labels) if s == sub_id]
             novo_id  = ri if sub_id == 0 else proximos_clusters
@@ -299,7 +249,6 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
 
     clusters_ids = sorted([c for c in df['CLUSTER_FINAL'].unique() if c >= 0])
 
-    # Mapeia cluster_id → capacidade (herda do grupo-rota original)
     cap_map = {}
     for c in clusters_ids:
         rota_orig = df[df['CLUSTER_FINAL'] == c]['GRUPO_ROTA'].mode()
@@ -313,9 +262,7 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
             continue
 
         nomes_bairros = cluster_df['BAIRRO_NOME'].unique().tolist()
-
-        # Afunilamento: mais distante ao destino primeiro
-        cluster_df = cluster_df.sort_values('DIST_KM', ascending=False)
+        cluster_df    = cluster_df.sort_values('DIST_KM', ascending=False)
 
         membros_idx    = []
         membros_coords = []
@@ -350,7 +297,6 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
                 'taxa': round(taxa * 100, 1), 'bairros': nomes_bairros
             })
 
-        # Sinaliza colaboradores únicos no bairro (podem ser mal encaixados)
         for bairro in nomes_bairros:
             colab_bairro = cluster_df[cluster_df['BAIRRO_NOME'] == bairro]
             if len(colab_bairro) == 1:
@@ -362,13 +308,13 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
 
         if membros_idx:
             rotas.append({
-                'rota_id':   cluster_id + 1,
-                'indices':   membros_idx,
+                'rota_id':    cluster_id + 1,
+                'indices':    membros_idx,
                 'capacidade': cap,
-                'ocupacao':  len(membros_idx),
-                'taxa':      round(taxa * 100, 1),
-                'bairros':   nomes_bairros,
-                'nome_rota': _nome_rota(nomes_bairros, cluster_id)
+                'ocupacao':   len(membros_idx),
+                'taxa':       round(taxa * 100, 1),
+                'bairros':    nomes_bairros,
+                'nome_rota':  _nome_rota(nomes_bairros, cluster_id)
             })
 
     nao_atribuidos = df[~df.index.isin(atribuidos)]
@@ -382,7 +328,6 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros):
 st.title("🚌 Roteamento Inteligente de Colaboradores")
 st.caption("Agrupamento automático por bairros de Manaus + afunilamento ao destino")
 
-# Verifica e carrega GeoJSON
 if not os.path.exists(GEOJSON_PATH):
     st.error(
         f"Arquivo `BAIRROS_MANAUS.geojson` não encontrado em `{GEOJSON_PATH}`. "
@@ -489,7 +434,7 @@ if processar and uploaded_file and destino_final:
         st.subheader("⚠️ Atenção")
 
         if a_isolados:
-            nomes = ", ".join({a['colaborador'] for a in a_isolados})
+            nomes       = ", ".join({a['colaborador'] for a in a_isolados})
             bairros_iso = ", ".join({a['bairro'] for a in a_isolados})
             st.markdown(
                 f'<div class="alerta-box">📍 Colaboradores únicos no bairro '
@@ -534,23 +479,7 @@ if processar and uploaded_file and destino_final:
                 st.metric(label, f"{r['ocupacao']}/{r['capacidade']}",
                           f"{cor} {r['taxa']}%")
 
-    # ── Geocodificação ───────────────────────────────────────
-    cache_key = f"end_{uploaded_file.name}_{n_total}"
-    if cache_key not in st.session_state:
-        ruas, bairros_g = [], []
-        with st.spinner("Buscando endereços..."):
-            prog = st.progress(0)
-            for i, (_, row) in enumerate(df.iterrows()):
-                rua, bairro = obter_endereco_google(float(row['LAT E']), float(row['LONG E']))
-                ruas.append(rua); bairros_g.append(bairro)
-                time.sleep(0.05)
-                prog.progress((i+1) / n_total)
-        st.session_state[cache_key] = (ruas, bairros_g)
-
-    ruas, bairros_g = st.session_state[cache_key]
-    df['ENDERECO'] = ruas
-
-    # ── KMLs ─────────────────────────────────────────────────
+    # ── KMLs e Relatório ─────────────────────────────────────
     kml_files      = []
     relatorio_rows = []
 
@@ -585,14 +514,13 @@ if processar and uploaded_file and destino_final:
 
             for _, row in grupo_df.iterrows():
                 relatorio_rows.append({
-                    'ROTA':       nome_rota,
+                    'ROTA':        nome_rota,
                     'COLABORADOR': row['COLABORADOR'],
-                    'BAIRRO':     row.get('BAIRRO_NOME', ''),
-                    'ENDERECO':   row.get('ENDERECO', ''),
-                    'LAT E':      row['LAT E'],
-                    'LONG E':     row['LONG E'],
-                    'OCUPACAO':   f"{r['ocupacao']}/{r['capacidade']}",
-                    'TAXA_%':     r['taxa'],
+                    'BAIRRO':      row.get('BAIRRO_NOME', ''),
+                    'LAT E':       row['LAT E'],
+                    'LONG E':      row['LONG E'],
+                    'OCUPACAO':    f"{r['ocupacao']}/{r['capacidade']}",
+                    'TAXA_%':      r['taxa'],
                 })
 
     st.session_state["kmls"]         = kml_files
