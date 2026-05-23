@@ -482,23 +482,41 @@ if processar and uploaded_file and destino_final:
     st.session_state["kmls"]       = None  # reseta downloads anteriores
 
 # ── EDITOR INTERATIVO DE MAPA ────────────────────────────────
+# Comunicação iframe→Streamlit via st.query_params:
+# O botão "Confirmar" no mapa faz window.location = '?atrib=<JSON>'
+# O Streamlit lê st.query_params["atrib"] e atualiza session_state.
+# Isso é a única forma confiável no Streamlit Cloud sem componente custom.
+
+import streamlit.components.v1 as components
+import urllib.parse
+
+# Lê edições feitas via query param (quando o mapa fez redirect)
+qp = st.query_params
+if "atrib" in qp:
+    try:
+        decoded = urllib.parse.unquote(qp["atrib"])
+        atrib_from_url = {int(k): int(v) for k, v in json.loads(decoded).items()}
+        st.session_state["atribuicao"] = atrib_from_url
+        # Limpa o query param para não re-aplicar em próximo re-run
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.warning(f"Erro ao ler edições do mapa: {e}")
+
 if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is not None:
 
     df_base       = st.session_state["df_base"]
     atribuicao    = st.session_state["atribuicao"]
     rotas_orig    = st.session_state["rotas_resultado"]
-    capacidades   = st.session_state["capacidades"]
     destino_final = st.session_state["destino_final"]
 
-    # Nomes e capacidades por rota_id
     rota_info = {r['rota_id']: {'nome': r['nome_rota'], 'cap': r['capacidade']}
                  for r in rotas_orig}
 
     st.subheader("🗺️ Editor de Itinerários")
-    st.caption("Clique em um marcador para ver as opções de transferência. "
-               "Confirme quando estiver satisfeito para gerar os KMLs.")
+    st.caption("Clique em um marcador para transferi-lo de rota. "
+               "As linhas mostram o itinerário atual. Use os toggles para ocultar rotas.")
 
-    # Paleta de cores para até 20 rotas
     CORES = [
         "#e6194b","#3cb44b","#4363d8","#f58231","#911eb4",
         "#42d4f4","#f032e6","#bfef45","#fabed4","#469990",
@@ -506,42 +524,31 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
         "#808000","#ffd8b1","#000075","#a9a9a9","#ffffff",
     ]
 
-    # Monta lista de pontos para o JS
+    # Monta lista de pontos
     pontos_js = []
     for df_idx, rota_id in atribuicao.items():
         row = df_base.loc[df_idx]
-        cor = CORES[(rota_id - 1) % len(CORES)]
         pontos_js.append({
-            "df_idx":      int(df_idx),
-            "nome":        str(row['COLABORADOR']),
-            "bairro":      str(row.get('BAIRRO_NOME', '')),
-            "lat":         float(row['LAT E']),
-            "lon":         float(row['LONG E']),
-            "rota_id":     int(rota_id),
-            "nome_rota":   rota_info[rota_id]['nome'],
-            "cor":         cor,
+            "df_idx":    int(df_idx),
+            "nome":      str(row['COLABORADOR']),
+            "bairro":    str(row.get('BAIRRO_NOME', '')),
+            "lat":       float(row['LAT E']),
+            "lon":       float(row['LONG E']),
+            "rota_id":   int(rota_id),
         })
 
-    # Métricas atuais por rota
-    def calcular_metricas(atrib, cap_map):
-        contagem = {}
-        for rota_id in cap_map:
-            contagem[rota_id] = 0
-        for rota_id in atrib.values():
-            contagem[rota_id] = contagem.get(rota_id, 0) + 1
-        return {
-            rid: {
-                "ocupacao": contagem.get(rid, 0),
-                "cap":      cap_map[rid],
-                "taxa":     round(contagem.get(rid, 0) / cap_map[rid] * 100, 1)
-            }
-            for rid in cap_map
-        }
-
     cap_map  = {int(r['rota_id']): int(r['capacidade']) for r in rotas_orig}
+
+    def calcular_metricas(atrib, cap_map):
+        contagem = {rid: 0 for rid in cap_map}
+        for rota_id in atrib.values():
+            contagem[int(rota_id)] = contagem.get(int(rota_id), 0) + 1
+        return {rid: {"ocupacao": contagem.get(rid,0), "cap": cap_map[rid],
+                      "taxa": round(contagem.get(rid,0)/cap_map[rid]*100,1)}
+                for rid in cap_map}
+
     metricas = calcular_metricas(atribuicao, cap_map)
 
-    # Opções de rotas para o dropdown JS — tudo tipos nativos
     opcoes_rotas = [
         {"rota_id": int(rid),
          "label":   (f"Rota {rid} — {rota_info[rid]['nome']} "
@@ -549,113 +556,110 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
         for rid in sorted(rota_info)
     ]
 
-    # cap_map com chaves string para o JS
     cap_map_js = {str(int(k)): int(v) for k, v in cap_map.items()}
 
-    # Encoder seguro para tipos numpy
     import numpy as np
     class NumpyEncoder(json.JSONEncoder):
         def default(self, o):
-            if isinstance(o, np.integer): return int(o)
+            if isinstance(o, np.integer):  return int(o)
             if isinstance(o, np.floating): return float(o)
-            if isinstance(o, np.ndarray): return o.tolist()
+            if isinstance(o, np.ndarray):  return o.tolist()
             return super().default(o)
 
     def safe_json(obj):
         return json.dumps(obj, cls=NumpyEncoder)
 
-    pontos_json = safe_json(pontos_js)
-    opcoes_json = safe_json(opcoes_rotas)
-    cores_json  = safe_json(CORES)
-    capmap_json = safe_json(cap_map_js)
-
-    # Centro do mapa
     lats_all   = [p['lat'] for p in pontos_js]
     lons_all   = [p['lon'] for p in pontos_js]
     centro_lat = sum(lats_all) / len(lats_all)
     centro_lon = sum(lons_all) / len(lons_all)
 
-    html_editor = f"""
-<!DOCTYPE html>
+    pontos_json  = safe_json(pontos_js)
+    opcoes_json  = safe_json(opcoes_rotas)
+    cores_json   = safe_json(CORES)
+    capmap_json  = safe_json(cap_map_js)
+
+    html_editor = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; font-size: 13px; }}
-  body {{ display: flex; height: 620px; overflow: hidden; }}
-  #map {{ flex: 1; height: 100%; }}
-  #painel {{
-    width: 280px; height: 100%; background: #1e1e1e; color: #ddd;
-    display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #333;
-  }}
-  #painel-header {{
-    padding: 10px 12px; background: #111; font-weight: 600;
-    font-size: 12px; letter-spacing: .05em; color: #aaa; text-transform: uppercase;
-  }}
-  #metricas {{ flex: 1; overflow-y: auto; padding: 8px; }}
-  .rota-card {{
-    background: #2a2a2a; border-radius: 6px; padding: 8px 10px;
-    margin-bottom: 6px; border-left: 4px solid #555;
-  }}
-  .rota-nome {{ font-weight: 600; font-size: 12px; color: #eee; margin-bottom: 4px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-  .rota-bar-wrap {{ background: #444; border-radius: 3px; height: 6px; margin: 4px 0; }}
-  .rota-bar {{ height: 6px; border-radius: 3px; transition: width .3s; }}
-  .rota-nums {{ font-size: 11px; color: #aaa; }}
-  #popup-overlay {{
-    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5);
-    z-index: 9999; align-items: center; justify-content: center;
-  }}
-  #popup-overlay.ativo {{ display: flex; }}
-  #popup-box {{
-    background: #fff; border-radius: 10px; padding: 20px 24px;
-    min-width: 280px; max-width: 340px; box-shadow: 0 8px 32px rgba(0,0,0,.3);
-  }}
-  #popup-box h3 {{ font-size: 15px; color: #111; margin-bottom: 4px; }}
-  #popup-box .sub {{ font-size: 12px; color: #666; margin-bottom: 14px; }}
-  #popup-box label {{ font-size: 12px; font-weight: 600; color: #333; }}
-  #popup-box select {{
-    width: 100%; margin: 6px 0 14px; padding: 7px 10px;
-    border: 1px solid #ccc; border-radius: 6px; font-size: 13px;
-  }}
-  .btn-row {{ display: flex; gap: 8px; }}
-  .btn {{ flex: 1; padding: 8px; border: none; border-radius: 6px;
-    font-size: 13px; font-weight: 600; cursor: pointer; }}
-  .btn-ok {{ background: #3b82f6; color: #fff; }}
-  .btn-ok:hover {{ background: #2563eb; }}
-  .btn-cancel {{ background: #e5e7eb; color: #333; }}
-  .btn-cancel:hover {{ background: #d1d5db; }}
-  #confirmar-wrap {{
-    padding: 10px 12px; border-top: 1px solid #333; background: #111;
-  }}
-  #btn-confirmar {{
-    width: 100%; padding: 10px; background: #16a34a; color: #fff;
-    border: none; border-radius: 7px; font-size: 13px; font-weight: 700;
-    cursor: pointer; letter-spacing: .03em;
-  }}
-  #btn-confirmar:hover {{ background: #15803d; }}
-  #status-msg {{ font-size: 11px; color: #6ee7b7; margin-top: 6px; text-align: center; min-height: 16px; }}
+* {{ box-sizing:border-box; margin:0; padding:0; font-family:sans-serif; font-size:13px; }}
+body {{ display:flex; height:640px; overflow:hidden; }}
+#map {{ flex:1; height:100%; }}
+#painel {{
+  width:290px; height:100%; background:#1a1a1a; color:#ddd;
+  display:flex; flex-direction:column; border-left:1px solid #333;
+}}
+#painel-header {{ padding:10px 12px; background:#111; font-weight:600;
+  font-size:11px; letter-spacing:.06em; color:#888; text-transform:uppercase; }}
+#toggles {{ flex:1; overflow-y:auto; padding:8px; }}
+.rota-toggle {{
+  background:#242424; border-radius:7px; padding:8px 10px;
+  margin-bottom:6px; border-left:4px solid #555; cursor:pointer;
+  user-select:none;
+}}
+.rota-toggle.oculta {{ opacity:.35; }}
+.rota-top {{ display:flex; align-items:center; gap:7px; margin-bottom:5px; }}
+.rota-nome {{ font-weight:600; font-size:12px; color:#eee;
+  flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.toggle-btn {{
+  font-size:10px; padding:2px 7px; border-radius:4px; border:none;
+  background:#333; color:#aaa; cursor:pointer; flex-shrink:0;
+}}
+.toggle-btn:hover {{ background:#444; }}
+.rota-bar-wrap {{ background:#3a3a3a; border-radius:3px; height:5px; margin:3px 0; }}
+.rota-bar {{ height:5px; border-radius:3px; transition:width .3s; }}
+.rota-nums {{ font-size:11px; color:#888; }}
+#confirmar-wrap {{ padding:10px 12px; border-top:1px solid #333; background:#111; }}
+#btn-confirmar {{
+  width:100%; padding:10px; background:#16a34a; color:#fff;
+  border:none; border-radius:7px; font-size:13px; font-weight:700;
+  cursor:pointer;
+}}
+#btn-confirmar:hover {{ background:#15803d; }}
+#status-msg {{ font-size:11px; color:#6ee7b7; margin-top:5px; text-align:center; min-height:15px; }}
+/* Popup */
+#popup-overlay {{
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.55);
+  z-index:9999; align-items:center; justify-content:center;
+}}
+#popup-overlay.ativo {{ display:flex; }}
+#popup-box {{
+  background:#fff; border-radius:10px; padding:20px 24px;
+  min-width:290px; box-shadow:0 8px 32px rgba(0,0,0,.35);
+}}
+#popup-box h3 {{ font-size:15px; color:#111; margin-bottom:3px; }}
+.popup-sub {{ font-size:12px; color:#666; margin-bottom:14px; }}
+#popup-box label {{ font-size:12px; font-weight:600; color:#333; }}
+#popup-box select {{
+  width:100%; margin:6px 0 14px; padding:7px 10px;
+  border:1px solid #ccc; border-radius:6px; font-size:13px;
+}}
+.btn-row {{ display:flex; gap:8px; }}
+.btn {{ flex:1; padding:8px; border:none; border-radius:6px;
+  font-size:13px; font-weight:600; cursor:pointer; }}
+.btn-ok {{ background:#3b82f6; color:#fff; }}
+.btn-ok:hover {{ background:#2563eb; }}
+.btn-cancel {{ background:#e5e7eb; color:#333; }}
 </style>
 </head>
 <body>
-
 <div id="map"></div>
-
 <div id="painel">
-  <div id="painel-header">📊 Métricas por Rota</div>
-  <div id="metricas"></div>
+  <div id="painel-header">🗂 Rotas</div>
+  <div id="toggles"></div>
   <div id="confirmar-wrap">
-    <button id="btn-confirmar" onclick="confirmar()">✅ Confirmar e Gerar KMLs</button>
+    <button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button>
     <div id="status-msg"></div>
   </div>
 </div>
-
 <div id="popup-overlay">
   <div id="popup-box">
     <h3 id="popup-nome"></h3>
-    <div class="sub" id="popup-sub"></div>
+    <div class="popup-sub" id="popup-sub"></div>
     <label>Transferir para:</label>
     <select id="popup-select"></select>
     <div class="btn-row">
@@ -664,47 +668,137 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
     </div>
   </div>
 </div>
-
 <script>
-const PONTOS   = {pontos_json};
-const OPCOES   = {opcoes_json};
-const CORES    = {cores_json};
-const CAP_MAP  = {capmap_json};
-const DESTINO  = [{destino_final[0]}, {destino_final[1]}];
+const PONTOS  = {pontos_json};
+const OPCOES  = {opcoes_json};
+const CORES   = {cores_json};
+const CAP_MAP = {capmap_json};
+const DESTINO = [{destino_final[0]}, {destino_final[1]}];
 
-// Estado editável
 let atribuicao = {{}};
 PONTOS.forEach(p => {{ atribuicao[p.df_idx] = p.rota_id; }});
 
 // Mapa
 const map = L.map('map').setView([{centro_lat}, {centro_lon}], 12);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-  attribution: '© OpenStreetMap'
+  attribution:'© OpenStreetMap'
 }}).addTo(map);
 
-// Marcador destino
 L.marker(DESTINO, {{
   icon: L.divIcon({{
-    html: '<div style="background:#111;color:#fff;border-radius:4px;padding:3px 6px;font-size:11px;font-weight:700;white-space:nowrap;">🏁 Destino</div>',
-    iconAnchor: [40, 10], className: ''
+    html:'<div style="background:#111;color:#fff;border-radius:4px;padding:3px 7px;font-size:11px;font-weight:700;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">🏁 Destino</div>',
+    iconAnchor:[40,10], className:''
   }})
 }}).addTo(map);
 
-// Marcadores colaboradores
-let markers = {{}};
+function corRota(rid) {{ return CORES[(rid-1) % CORES.length]; }}
 
-function corRota(rota_id) {{
-  return CORES[(rota_id - 1) % CORES.length];
-}}
-
-function criarIcone(cor) {{
+function criarIcone(rid) {{
+  const cor = corRota(rid);
   return L.divIcon({{
-    html: `<div style="width:14px;height:14px;border-radius:50%;background:${{cor}};
-           border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer;"></div>`,
-    iconAnchor: [7, 7], className: ''
+    html:`<div style="width:13px;height:13px;border-radius:50%;background:${{cor}};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer"></div>`,
+    iconAnchor:[6,6], className:''
   }});
 }}
 
+// Marcadores
+let markers = {{}};
+PONTOS.forEach(p => {{
+  const mk = L.marker([p.lat, p.lon], {{icon: criarIcone(p.rota_id)}})
+    .addTo(map)
+    .bindTooltip(p.nome, {{permanent:false, direction:'top', offset:[0,-8]}})
+    .on('click', () => abrirPopup(p.df_idx));
+  markers[p.df_idx] = mk;
+}});
+
+// Linhas por rota (polylines)
+let polylines = {{}};
+let rotasVisiveis = {{}};
+
+function pontosOrdenadosPorRota(rid) {{
+  // Filtra e ordena pela distância ao destino (decrescente = mais longe primeiro)
+  const pts = PONTOS.filter(p => atribuicao[p.df_idx] === rid);
+  pts.sort((a,b) => {{
+    const da = Math.hypot(a.lat-DESTINO[0], a.lon-DESTINO[1]);
+    const db = Math.hypot(b.lat-DESTINO[0], b.lon-DESTINO[1]);
+    return db - da;
+  }});
+  return pts;
+}}
+
+function atualizarLinhas() {{
+  // Remove polylines existentes
+  Object.values(polylines).forEach(pl => map.removeLayer(pl));
+  polylines = {{}};
+
+  const rota_ids = [...new Set(Object.values(atribuicao))].sort((a,b)=>a-b);
+  rota_ids.forEach(rid => {{
+    if (!rotasVisiveis[rid]) return;
+    const pts = pontosOrdenadosPorRota(rid);
+    if (pts.length < 2) return;
+    const latlngs = pts.map(p => [p.lat, p.lon]);
+    latlngs.push(DESTINO); // linha vai até o destino
+    polylines[rid] = L.polyline(latlngs, {{
+      color: corRota(rid), weight:3, opacity:.75,
+      dashArray: '6,4'
+    }}).addTo(map);
+  }});
+}}
+
+function atualizarTogglesPainel() {{
+  const rota_ids = [...new Set(Object.values(atribuicao))].sort((a,b)=>a-b);
+
+  // Inicializa visibilidade se necessário
+  rota_ids.forEach(rid => {{
+    if (rotasVisiveis[rid] === undefined) rotasVisiveis[rid] = true;
+  }});
+
+  const div = document.getElementById('toggles');
+  div.innerHTML = '';
+  rota_ids.forEach(rid => {{
+    const cap   = parseInt(CAP_MAP[String(rid)] || 1);
+    const ocup  = Object.values(atribuicao).filter(r => r === rid).length;
+    const taxa  = Math.round(ocup/cap*100);
+    const cor   = corRota(rid);
+    const barCor= taxa>=60?'#22c55e':taxa>=40?'#f59e0b':'#ef4444';
+    const vis   = rotasVisiveis[rid];
+    const card  = document.createElement('div');
+    card.className = 'rota-toggle' + (vis?'':' oculta');
+    card.id = `toggle-${{rid}}`;
+    card.innerHTML = `
+      <div class="rota-top">
+        <div style="width:10px;height:10px;border-radius:50%;background:${{cor}};flex-shrink:0"></div>
+        <div class="rota-nome">Rota ${{rid}}</div>
+        <button class="toggle-btn" onclick="toggleRota(${{rid}},event)">${{vis?'Ocultar':'Mostrar'}}</button>
+      </div>
+      <div class="rota-bar-wrap">
+        <div class="rota-bar" style="width:${{Math.min(100,taxa)}}%;background:${{barCor}}"></div>
+      </div>
+      <div class="rota-nums">${{ocup}}/${{cap}} &nbsp;·&nbsp; ${{taxa}}%</div>`;
+    div.appendChild(card);
+  }});
+}}
+
+function toggleRota(rid, e) {{
+  e.stopPropagation();
+  rotasVisiveis[rid] = !rotasVisiveis[rid];
+  // Marcadores
+  Object.keys(atribuicao).forEach(idx => {{
+    if (atribuicao[idx] === rid) {{
+      if (rotasVisiveis[rid]) markers[idx].addTo(map);
+      else map.removeLayer(markers[idx]);
+    }}
+  }});
+  atualizarLinhas();
+  atualizarTogglesPainel();
+}}
+
+function atualizar() {{
+  atualizarLinhas();
+  atualizarTogglesPainel();
+}}
+
+// Popup
 let popupDfIdx = null;
 
 function abrirPopup(dfIdx) {{
@@ -713,13 +807,12 @@ function abrirPopup(dfIdx) {{
   const rid = atribuicao[dfIdx];
   document.getElementById('popup-nome').textContent = p.nome;
   document.getElementById('popup-sub').textContent  =
-    `${{p.bairro}} — atualmente na Rota ${{rid}}`;
-
+    (p.bairro ? p.bairro + ' — ' : '') + `atualmente na Rota ${{rid}}`;
   const sel = document.getElementById('popup-select');
   sel.innerHTML = '';
   OPCOES.forEach(op => {{
     const opt = document.createElement('option');
-    opt.value       = op.rota_id;
+    opt.value = op.rota_id;
     opt.textContent = op.label;
     if (op.rota_id === rid) opt.selected = true;
     sel.appendChild(opt);
@@ -736,102 +829,42 @@ function transferir() {{
   if (popupDfIdx === null) return;
   const novaRota = parseInt(document.getElementById('popup-select').value);
   atribuicao[popupDfIdx] = novaRota;
-
-  // Atualiza ícone do marcador
-  const cor = corRota(novaRota);
-  markers[popupDfIdx].setIcon(criarIcone(cor));
-
+  markers[popupDfIdx].setIcon(criarIcone(novaRota));
+  // Garante visibilidade no mapa
+  if (rotasVisiveis[novaRota] === false) markers[popupDfIdx].addTo(map);
   fecharPopup();
-  atualizarMetricas();
+  atualizar();
 }}
 
-function atualizarMetricas() {{
-  // Conta por rota
-  const contagem = {{}};
-  Object.values(atribuicao).forEach(rid => {{
-    contagem[rid] = (contagem[rid] || 0) + 1;
-  }});
-
-  const div = document.getElementById('metricas');
-  div.innerHTML = '';
-
-  const rota_ids = [...new Set(Object.values(atribuicao))].sort((a,b)=>a-b);
-  rota_ids.forEach(rid => {{
-    const cap  = parseInt(CAP_MAP[rid] || CAP_MAP[String(rid)] || 1);
-    const ocup = contagem[rid] || 0;
-    const taxa = Math.round(ocup / cap * 100);
-    const cor  = corRota(rid);
-    const barCor = taxa >= 60 ? '#22c55e' : taxa >= 40 ? '#f59e0b' : '#ef4444';
-    const barW   = Math.min(100, taxa);
-
-    div.innerHTML += `
-      <div class="rota-card" style="border-left-color:${{cor}}">
-        <div class="rota-nome">Rota ${{rid}}</div>
-        <div class="rota-bar-wrap">
-          <div class="rota-bar" style="width:${{barW}}%;background:${{barCor}}"></div>
-        </div>
-        <div class="rota-nums">${{ocup}}/${{cap}} lugares &nbsp;·&nbsp; ${{taxa}}%</div>
-      </div>`;
-  }});
-}}
-
-// Cria marcadores
-PONTOS.forEach(p => {{
-  const cor = corRota(atribuicao[p.df_idx]);
-  const mk  = L.marker([p.lat, p.lon], {{ icon: criarIcone(cor) }})
-    .addTo(map)
-    .bindTooltip(p.nome, {{ permanent: false, direction: 'top', offset: [0, -8] }})
-    .on('click', () => abrirPopup(p.df_idx));
-  markers[p.df_idx] = mk;
-}});
-
-atualizarMetricas();
-
-// Fecha popup ao clicar fora
 document.getElementById('popup-overlay').addEventListener('click', function(e) {{
   if (e.target === this) fecharPopup();
 }});
 
-// Confirmar: envia atribuição editada para o Streamlit via postMessage
+// Confirmar: redireciona a janela pai com query param
 function confirmar() {{
-  document.getElementById('status-msg').textContent = 'Enviando...';
-  window.parent.postMessage({{
-    type: 'streamlit:setComponentValue',
-    value: JSON.stringify(atribuicao)
-  }}, '*');
-  document.getElementById('status-msg').textContent = '✓ Clique em "Gerar KMLs" acima';
+  document.getElementById('status-msg').textContent = 'Aguarde...';
+  const payload = encodeURIComponent(JSON.stringify(atribuicao));
+  window.parent.location.href = window.parent.location.pathname + '?atrib=' + payload;
 }}
+
+// Init
+atualizar();
 </script>
 </body>
-</html>
-"""
+</html>"""
 
-    import streamlit.components.v1 as components
-    resultado_editor = components.html(html_editor, height=630, scrolling=False)
+    components.html(html_editor, height=650, scrolling=False)
 
-    # Campo oculto para receber a atribuição editada via query param
     st.markdown("---")
-    st.markdown("**Cole aqui a atribuição após confirmar no mapa** (ou clique diretamente em Gerar KMLs se não fez alterações):")
-
-    col_edit, col_btn = st.columns([3, 1])
-    with col_edit:
-        atrib_json = st.text_area(
-            "Atribuição (JSON gerado ao confirmar)",
-            value=json.dumps({str(int(k)): int(v) for k, v in st.session_state["atribuicao"].items()}),
-            height=80, label_visibility="collapsed"
-        )
+    col_btn, col_info = st.columns([1, 3])
     with col_btn:
-        st.write("")
         gerar_kmls = st.button("🗂️ Gerar KMLs", type="primary")
+    with col_info:
+        st.caption("Clique em **Confirmar edições** no mapa para salvar as transferências, "
+                   "depois clique aqui para gerar os arquivos.")
 
     if gerar_kmls:
-        # Parseia atribuição (editada ou original)
-        try:
-            atrib_editada = {int(k): int(v) for k, v in json.loads(atrib_json).items()}
-        except Exception:
-            atrib_editada = st.session_state["atribuicao"]
-            st.warning("JSON inválido — usando atribuição original.")
-
+        atrib_editada = {int(k): int(v) for k, v in st.session_state["atribuicao"].items()}
         df_base       = st.session_state["df_base"]
         rotas_orig    = st.session_state["rotas_resultado"]
         destino_final = st.session_state["destino_final"]
@@ -839,7 +872,6 @@ function confirmar() {{
         cap_map_local = {r['rota_id']: r['capacidade'] for r in rotas_orig}
         nomes_orig    = {r['rota_id']: r['nome_rota'] for r in rotas_orig}
 
-        # Reconstrói grupos a partir da atribuição editada
         grupos_editados = {}
         for df_idx, rota_id in atrib_editada.items():
             grupos_editados.setdefault(rota_id, []).append(df_idx)
@@ -860,7 +892,6 @@ function confirmar() {{
                     wpts  = list(zip(grupo_df[col_lat], grupo_df[col_lon]))
                     c_ors = [[w[1], w[0]] for w in wpts]
                     c_ors.append([destino_final[1], destino_final[0]])
-
                     try:
                         res = client.directions(
                             coordinates=c_ors, profile='driving-car',
@@ -871,7 +902,6 @@ function confirmar() {{
                         st.warning(f"Erro ORS {nome_rota} {tipo}: {e}")
                         coords_kml = [[lon, lat] for lat, lon in wpts] + \
                                      [[destino_final[1], destino_final[0]]]
-
                     kml_files.append((
                         f"{nome_rota}_{tipo.lower()}",
                         gerar_kml(grupo_df, coords_kml, destino_final, nome_rota, tipo)
@@ -892,6 +922,7 @@ function confirmar() {{
         st.session_state["kmls"]         = kml_files
         st.session_state["df_relatorio"] = pd.DataFrame(relatorio_rows)
         st.success("✅ KMLs gerados com sucesso!")
+
 
 # ── Downloads ────────────────────────────────────────────────
 if st.session_state.get("kmls"):
