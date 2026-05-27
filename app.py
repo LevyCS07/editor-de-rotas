@@ -721,6 +721,68 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
     tipo_rota_calc = st.session_state.get("tipo_rota_calc", "Entrada")
     lat_col, lon_col = colunas_tipo(tipo_rota_calc)
 
+    with st.expander("Gerenciar rotas", expanded=True):
+        col_add_cap, col_add_btn, col_rm_sel, col_rm_btn = st.columns([1, 1, 1.4, 1])
+        with col_add_cap:
+            nova_capacidade = st.number_input(
+                "Capacidade da nova rota",
+                min_value=5,
+                max_value=100,
+                value=int(st.session_state.get("capacidades", [22])[-1]),
+                step=1,
+            )
+        with col_add_btn:
+            st.write("")
+            st.write("")
+            if st.button("Adicionar rota"):
+                novo_id = max([int(r["rota_id"]) for r in rotas_orig] or [0]) + 1
+                rotas_orig.append(
+                    {
+                        "rota_id": novo_id,
+                        "indices": [],
+                        "capacidade": int(nova_capacidade),
+                        "ocupacao": 0,
+                        "taxa": 0,
+                        "bairros": [],
+                        "nome_rota": f"ROTA_{novo_id:02d}",
+                    }
+                )
+                st.session_state["rotas_resultado"] = rotas_orig
+                st.session_state["capacidades"] = [int(r["capacidade"]) for r in rotas_orig]
+                st.session_state["atribuicao_confirmada"] = False
+                st.session_state["atribuicao_origem"] = "rotas_editadas"
+                st.rerun()
+
+        opcoes_remover = [int(r["rota_id"]) for r in rotas_orig]
+        with col_rm_sel:
+            rota_remover = st.selectbox(
+                "Remover rota",
+                opcoes_remover,
+                format_func=lambda rid: f"Rota {rid}",
+                disabled=len(opcoes_remover) <= 1,
+            )
+        with col_rm_btn:
+            st.write("")
+            st.write("")
+            if st.button("Remover rota", disabled=len(opcoes_remover) <= 1):
+                rota_remover = int(rota_remover)
+                st.session_state["rotas_resultado"] = [
+                    r for r in rotas_orig if int(r["rota_id"]) != rota_remover
+                ]
+                st.session_state["atribuicao"] = {
+                    int(idx): int(rid)
+                    for idx, rid in atribuicao.items()
+                    if int(rid) != rota_remover
+                }
+                st.session_state["capacidades"] = [
+                    int(r["capacidade"]) for r in st.session_state["rotas_resultado"]
+                ]
+                st.session_state["atribuicao_confirmada"] = False
+                st.session_state["atribuicao_origem"] = "rotas_editadas"
+                st.rerun()
+
+    atribuicao = st.session_state["atribuicao"]
+    rotas_orig = st.session_state["rotas_resultado"]
     rota_info = {r["rota_id"]: {"nome": r["nome_rota"], "cap": r["capacidade"]} for r in rotas_orig}
 
     st.subheader("🗺️ Editor de Itinerários")
@@ -919,6 +981,7 @@ body {{ display:flex; height:640px; overflow:hidden; }}
 </head>
 <body>
 <div id="map"></div>
+<form id="confirm-form" method="GET" target="_top" style="display:none"><input type="hidden" id="atrib-input" name="atrib"/></form>
 <div id="painel"><div id="painel-header">🗂 Rotas</div><div id="selecao-wrap"><select id="bulk-rota-select"></select><button id="btn-selecionar-area" onclick="ativarSelecaoArea()">Selecionar área</button><button id="btn-aplicar-selecao" onclick="aplicarSelecao()">Adicionar selecionados</button><button id="btn-limpar-selecao" onclick="limparSelecao()">Limpar seleção</button><div id="selecao-status">0 selecionado(s)</div></div><div id="toggles"></div><div id="confirmar-wrap"><button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button><div id="status-msg"></div><textarea id="fallback-payload" readonly></textarea></div></div>
 <div id="popup-overlay"><div id="popup-box"><h3 id="popup-nome"></h3><div class="popup-sub" id="popup-sub"></div><label>Transferir para:</label><select id="popup-select"></select><div class="btn-row"><button class="btn btn-cancel" onclick="fecharPopup()">Cancelar</button><button class="btn btn-ok" onclick="transferir()">Transferir</button></div></div></div>
 <script>
@@ -1060,21 +1123,28 @@ function toggleRota(rid, e) {{
 function confirmar() {{
   const status = document.getElementById('status-msg');
   const fallback = document.getElementById('fallback-payload');
+  const input = document.getElementById('atrib-input');
+  const form = document.getElementById('confirm-form');
   const raw = JSON.stringify(atribuicao);
   status.textContent = 'Salvando...';
   fallback.style.display = 'none';
   fallback.value = raw;
-  const bases = [document.referrer, window.location.href];
+  input.value = raw;
+
+  const bases = [document.referrer, window.location.href, window.parent.location.href];
   for (const base of bases) {{
     try {{
       const url = new URL(base);
-      url.searchParams.set('atrib', raw);
-      window.top.location.assign(url.toString());
+      url.search = '';
+      url.hash = '';
+      form.action = url.toString();
+      form.submit();
       return;
     }} catch (err) {{}}
   }}
   try {{
-    window.open('?atrib=' + encodeURIComponent(raw), '_top');
+    form.action = window.location.pathname || '/';
+    form.submit();
     return;
   }} catch (err) {{}}
   status.textContent = 'Nao consegui recarregar automaticamente. Copie o codigo abaixo.';
