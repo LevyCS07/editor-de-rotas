@@ -232,7 +232,7 @@ def _nome_rota(bairros_nomes, idx):
     return f"ROTA_{idx + 1:02d} - {' / '.join(bairros_nomes[:2])}"
 
 
-def clusterizar_por_bairros(df, destino, capacidades, client, bairros, tipo_rota):
+def clusterizar_por_bairros(df, destino, capacidades, client, bairros, tipo_rota, validar_tempo_ors=False):
     df = df.copy().reset_index(drop=True)
     n_rotas = len(capacidades)
     alertas = []
@@ -309,7 +309,9 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros, tipo_rota
         idxs_grupo = df[df["GRUPO_ROTA"] == ri].index.tolist()
         if len(idxs_grupo) <= cap:
             continue
-        n_sub = math.ceil(len(idxs_grupo) / cap)
+        n_sub = min(len(idxs_grupo), math.ceil(len(idxs_grupo) / cap))
+        if n_sub <= 1:
+            continue
         coords_s = df.loc[idxs_grupo, [lat_col, lon_col]].values
         scaler = StandardScaler()
         km = KMeans(n_clusters=n_sub, random_state=42, n_init=10)
@@ -370,23 +372,24 @@ def clusterizar_por_bairros(df, destino, capacidades, client, bairros, tipo_rota
                     )
                     continue
 
-                t, ok, motivo = estimar_tempo_ors(client, teste_coords, destino)
-                if motivo == "limite_waypoints":
-                    df.loc[idx, ["STATUS_ROTA", "MOTIVO_SEM_ROTA"]] = ["sem_rota", "limite_waypoints_ors"]
-                    alertas.append({"tipo": "waypoints", "rota": cluster_id + 1, "limite": MAX_WAYPOINTS})
-                    continue
-                if ok and t is not None and t > MAX_TEMPO_MIN:
-                    df.loc[idx, ["STATUS_ROTA", "MOTIVO_SEM_ROTA"]] = ["sem_rota", "excedeu_tempo_ors"]
-                    alertas.append(
-                        {
-                            "tipo": "tempo",
-                            "rota": cluster_id + 1,
-                            "colaborador": row["COLABORADOR"],
-                            "tempo_est": round(t, 1),
-                            "fonte": "ORS",
-                        }
-                    )
-                    continue
+                if validar_tempo_ors:
+                    t, ok, motivo = estimar_tempo_ors(client, teste_coords, destino)
+                    if motivo == "limite_waypoints":
+                        df.loc[idx, ["STATUS_ROTA", "MOTIVO_SEM_ROTA"]] = ["sem_rota", "limite_waypoints_ors"]
+                        alertas.append({"tipo": "waypoints", "rota": cluster_id + 1, "limite": MAX_WAYPOINTS})
+                        continue
+                    if ok and t is not None and t > MAX_TEMPO_MIN:
+                        df.loc[idx, ["STATUS_ROTA", "MOTIVO_SEM_ROTA"]] = ["sem_rota", "excedeu_tempo_ors"]
+                        alertas.append(
+                            {
+                                "tipo": "tempo",
+                                "rota": cluster_id + 1,
+                                "colaborador": row["COLABORADOR"],
+                                "tempo_est": round(t, 1),
+                                "fonte": "ORS",
+                            }
+                        )
+                        continue
 
             membros_idx.append(idx)
             membros_coords.append(coord_nova)
@@ -494,6 +497,11 @@ with st.sidebar:
     st.caption(f"📊 Ocupação mínima: **{int(TAXA_MINIMA * 100)}%**")
     st.caption(f"🧭 Waypoints ORS: **{MAX_WAYPOINTS}**")
     st.caption(f"🗺️ Bairros: **{len(gdf_bairros)}**")
+    validar_tempo_ors = st.checkbox(
+        "Validar tempo com ORS durante o agrupamento",
+        value=False,
+        help="Deixe desligado para gerar rotas mais rápido. Os KMLs finais ainda usam ORS quando possível.",
+    )
 
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -549,7 +557,13 @@ if processar and uploaded_file and destino_final:
 
     with st.spinner("Atribuindo bairros e montando rotas..."):
         rotas_resultado, nao_atribuidos, alertas, df_calc = clusterizar_por_bairros(
-            df, destino_final, capacidades, client, gdf_bairros, tipo_rota_calc
+            df,
+            destino_final,
+            capacidades,
+            client,
+            gdf_bairros,
+            tipo_rota_calc,
+            validar_tempo_ors=validar_tempo_ors,
         )
 
     a_tempo = [a for a in alertas if a["tipo"] == "tempo"]
