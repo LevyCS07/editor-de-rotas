@@ -674,9 +674,30 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
                 "df_idx": int(df_idx),
                 "nome": str(row["COLABORADOR"]),
                 "bairro": str(row.get("BAIRRO_NOME", "")),
+                "motivo": str(row.get("MOTIVO_SEM_ROTA", "")),
                 "lat": float(row[lat_col]),
                 "lon": float(row[lon_col]),
                 "rota_id": int(rota_id),
+                "sem_rota": False,
+            }
+        )
+
+    indices_atribuidos = set(int(i) for i in atribuicao)
+    sem_rota_editor = df_base[
+        (df_base.get("STATUS_ROTA", "") != "atribuido")
+        & (~df_base.index.isin(indices_atribuidos))
+    ]
+    for df_idx, row in sem_rota_editor.iterrows():
+        pontos_js.append(
+            {
+                "df_idx": int(df_idx),
+                "nome": str(row["COLABORADOR"]),
+                "bairro": str(row.get("BAIRRO_NOME", "")),
+                "motivo": str(row.get("MOTIVO_SEM_ROTA", "")),
+                "lat": float(row[lat_col]),
+                "lon": float(row[lon_col]),
+                "rota_id": None,
+                "sem_rota": True,
             }
         )
 
@@ -705,6 +726,15 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
                 "COLABORADORES_SALVOS": metricas[rid]["ocupacao"],
                 "CAPACIDADE": metricas[rid]["cap"],
                 "TAXA_%": metricas[rid]["taxa"],
+            }
+        )
+    if len(sem_rota_editor) > 0:
+        resumo_atual.append(
+            {
+                "ROTA": "Sem rota",
+                "COLABORADORES_SALVOS": int(len(sem_rota_editor)),
+                "CAPACIDADE": "",
+                "TAXA_%": "",
             }
         )
 
@@ -801,14 +831,20 @@ const CORES = {cores_json};
 const CAP_MAP = {capmap_json};
 const DESTINO = [{destino_final[0]}, {destino_final[1]}];
 let atribuicao = {{}};
-PONTOS.forEach(p => {{ atribuicao[p.df_idx] = p.rota_id; }});
+PONTOS.forEach(p => {{ if (p.rota_id !== null && p.rota_id !== undefined) atribuicao[p.df_idx] = p.rota_id; }});
 const map = L.map('map').setView([{centro_lat}, {centro_lon}], 12);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution:'© OpenStreetMap' }}).addTo(map);
 L.marker(DESTINO, {{ icon: L.divIcon({{ html:'<div style="background:#111;color:#fff;border-radius:4px;padding:3px 7px;font-size:11px;font-weight:700;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">🏁 Destino</div>', iconAnchor:[40,10], className:'' }}) }}).addTo(map);
 function corRota(rid) {{ return CORES[(rid-1) % CORES.length]; }}
-function criarIcone(rid) {{ const cor = corRota(rid); return L.divIcon({{ html:`<div style="width:13px;height:13px;border-radius:50%;background:${{cor}};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer"></div>`, iconAnchor:[6,6], className:'' }}); }}
+function criarIcone(rid) {{
+  if (rid === null || rid === undefined) {{
+    return L.divIcon({{ html:'<div style="width:16px;height:16px;border-radius:3px;background:#111;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:pointer"></div>', iconAnchor:[8,8], className:'' }});
+  }}
+  const cor = corRota(rid);
+  return L.divIcon({{ html:`<div style="width:13px;height:13px;border-radius:50%;background:${{cor}};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer"></div>`, iconAnchor:[6,6], className:'' }});
+}}
 let markers = {{}};
-PONTOS.forEach(p => {{ const mk = L.marker([p.lat, p.lon], {{icon: criarIcone(p.rota_id)}}).addTo(map).bindTooltip(p.nome, {{permanent:false, direction:'top', offset:[0,-8]}}).on('click', () => abrirPopup(p.df_idx)); markers[p.df_idx] = mk; }});
+PONTOS.forEach(p => {{ const mk = L.marker([p.lat, p.lon], {{icon: criarIcone(atribuicao[p.df_idx])}}).addTo(map).bindTooltip(p.sem_rota ? `${{p.nome}} (sem rota)` : p.nome, {{permanent:false, direction:'top', offset:[0,-8]}}).on('click', () => abrirPopup(p.df_idx)); markers[p.df_idx] = mk; }});
 let polylines = {{}};
 let rotasVisiveis = {{}};
 function pontosOrdenadosPorRota(rid) {{ const pts = PONTOS.filter(p => atribuicao[p.df_idx] === rid); pts.sort((a,b) => Math.hypot(b.lat-DESTINO[0], b.lon-DESTINO[1]) - Math.hypot(a.lat-DESTINO[0], a.lon-DESTINO[1])); return pts; }}
@@ -847,6 +883,87 @@ function confirmar() {{
     fallback.style.display = 'block';
     fallback.select();
   }}, 1500);
+}}
+function atualizarTogglesPainel() {{
+  const rota_ids = Object.keys(CAP_MAP).map(Number).sort((a,b)=>a-b);
+  rota_ids.forEach(rid => {{ if (rotasVisiveis[rid] === undefined) rotasVisiveis[rid] = true; }});
+  const div = document.getElementById('toggles');
+  div.innerHTML = '';
+  const semRota = PONTOS.filter(p => atribuicao[p.df_idx] === undefined).length;
+  if (semRota > 0) {{
+    const cardSem = document.createElement('div');
+    cardSem.className = 'rota-toggle';
+    cardSem.style.borderLeftColor = '#111';
+    cardSem.innerHTML = `<div class="rota-top"><div style="width:10px;height:10px;border-radius:3px;background:#111;border:1px solid #ddd;flex-shrink:0"></div><div class="rota-nome">Sem rota</div></div><div class="rota-nums">${{semRota}} colaborador(es) disponiveis para adicionar</div>`;
+    div.appendChild(cardSem);
+  }}
+  rota_ids.forEach(rid => {{
+    const cap = parseInt(CAP_MAP[String(rid)] || 1);
+    const ocup = Object.values(atribuicao).filter(r => r === rid).length;
+    const taxa = Math.round(ocup/cap*100);
+    const cor = corRota(rid);
+    const barCor = taxa>=60?'#22c55e':taxa>=40?'#f59e0b':'#ef4444';
+    const vis = rotasVisiveis[rid];
+    const card = document.createElement('div');
+    card.className = 'rota-toggle' + (vis?'':' oculta');
+    card.id = `toggle-${{rid}}`;
+    card.innerHTML = `<div class="rota-top"><div style="width:10px;height:10px;border-radius:50%;background:${{cor}};flex-shrink:0"></div><div class="rota-nome">Rota ${{rid}}</div><button class="toggle-btn" onclick="toggleRota(${{rid}},event)">${{vis?'Ocultar':'Mostrar'}}</button></div><div class="rota-bar-wrap"><div class="rota-bar" style="width:${{Math.min(100,taxa)}}%;background:${{barCor}}"></div></div><div class="rota-nums">${{ocup}}/${{cap}} - ${{taxa}}%</div>`;
+    div.appendChild(card);
+  }});
+}}
+function abrirPopup(dfIdx) {{
+  popupDfIdx = dfIdx;
+  const p = PONTOS.find(x => x.df_idx === dfIdx);
+  const rid = atribuicao[dfIdx];
+  document.getElementById('popup-nome').textContent = p.nome;
+  const statusAtual = rid === undefined ? 'sem rota' : `atualmente na Rota ${{rid}}`;
+  const motivo = rid === undefined && p.motivo ? ` - ${{p.motivo}}` : '';
+  document.getElementById('popup-sub').textContent = (p.bairro ? p.bairro + ' - ' : '') + statusAtual + motivo;
+  const sel = document.getElementById('popup-select');
+  sel.innerHTML = '';
+  OPCOES.forEach(op => {{
+    const opt = document.createElement('option');
+    opt.value = op.rota_id;
+    opt.textContent = op.label;
+    if (op.rota_id === rid) opt.selected = true;
+    sel.appendChild(opt);
+  }});
+  document.getElementById('popup-overlay').classList.add('ativo');
+}}
+function transferir() {{
+  if (popupDfIdx === null) return;
+  const novaRota = parseInt(document.getElementById('popup-select').value);
+  atribuicao[popupDfIdx] = novaRota;
+  const ponto = PONTOS.find(p => p.df_idx === popupDfIdx);
+  if (ponto) ponto.rota_id = novaRota;
+  markers[popupDfIdx].setIcon(criarIcone(novaRota));
+  if (rotasVisiveis[novaRota] === false) markers[popupDfIdx].addTo(map);
+  fecharPopup();
+  atualizar();
+}}
+function confirmar() {{
+  const status = document.getElementById('status-msg');
+  const fallback = document.getElementById('fallback-payload');
+  const raw = JSON.stringify(atribuicao);
+  status.textContent = 'Salvando...';
+  fallback.style.display = 'none';
+  fallback.value = raw;
+  const bases = [document.referrer, window.location.href];
+  for (const base of bases) {{
+    try {{
+      const url = new URL(base);
+      url.searchParams.set('atrib', raw);
+      window.top.location.assign(url.toString());
+      return;
+    }} catch (err) {{}}
+  }}
+  try {{
+    window.open('?atrib=' + encodeURIComponent(raw), '_top');
+    return;
+  }} catch (err) {{}}
+  status.textContent = 'Nao consegui recarregar automaticamente. Copie o codigo abaixo.';
+  fallback.style.display = 'block';
+  fallback.select();
 }}
 atualizar();
 </script>
