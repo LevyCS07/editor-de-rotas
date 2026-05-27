@@ -476,6 +476,7 @@ with st.spinner("Carregando mapa de bairros..."):
 with st.sidebar:
     st.header("⚙️ Configurações")
     tipo_rota_calc = st.radio("Tipo de rota para calcular", ["Entrada", "Saída"])
+    modo_criacao = st.radio("Criação das rotas", ["Automática", "Manual"])
     modo = st.radio("Modo de operação", ["Apenas capacidade", "Capacidade + quantidade de rotas"])
     st.divider()
 
@@ -500,6 +501,7 @@ with st.sidebar:
     validar_tempo_ors = st.checkbox(
         "Validar tempo com ORS durante o agrupamento",
         value=False,
+        disabled=modo_criacao == "Manual",
         help="Deixe desligado para gerar rotas mais rápido. Os KMLs finais ainda usam ORS quando possível.",
     )
 
@@ -521,7 +523,8 @@ if map_data and map_data.get("last_clicked"):
 else:
     st.info("Clique no mapa para definir o destino.")
 
-processar = st.button("🚀 Gerar Rotas", type="primary", disabled=not (uploaded_file and destino_final))
+texto_botao_processar = "Abrir editor manual" if modo_criacao == "Manual" else "🚀 Gerar Rotas"
+processar = st.button(texto_botao_processar, type="primary", disabled=not (uploaded_file and destino_final))
 
 if processar and uploaded_file and destino_final:
     try:
@@ -555,16 +558,48 @@ if processar and uploaded_file and destino_final:
     else:
         capacidades = [int(c) for c in capacidades_config]
 
-    with st.spinner("Atribuindo bairros e montando rotas..."):
-        rotas_resultado, nao_atribuidos, alertas, df_calc = clusterizar_por_bairros(
-            df,
-            destino_final,
-            capacidades,
-            client,
-            gdf_bairros,
-            tipo_rota_calc,
-            validar_tempo_ors=validar_tempo_ors,
+    if modo_criacao == "Manual":
+        lat_col, lon_col = colunas_tipo(tipo_rota_calc)
+        df_calc = df.copy().reset_index(drop=True)
+        b_idxs, b_nomes = [], []
+        for _, row in df_calc.iterrows():
+            bi, bn = atribuir_bairro(float(row[lat_col]), float(row[lon_col]), gdf_bairros)
+            b_idxs.append(bi)
+            b_nomes.append(bn)
+        df_calc["BAIRRO_IDX"] = b_idxs
+        df_calc["BAIRRO_NOME"] = b_nomes
+        df_calc["DIST_KM"] = df_calc.apply(
+            lambda r: haversine(r[lat_col], r[lon_col], destino_final[0], destino_final[1]),
+            axis=1,
         )
+        df_calc["STATUS_ROTA"] = "sem_rota"
+        df_calc["MOTIVO_SEM_ROTA"] = "modo_manual"
+        rotas_resultado = [
+            {
+                "rota_id": i + 1,
+                "indices": [],
+                "capacidade": int(cap),
+                "ocupacao": 0,
+                "taxa": 0,
+                "bairros": [],
+                "nome_rota": f"ROTA_{i + 1:02d}",
+            }
+            for i, cap in enumerate(capacidades)
+        ]
+        nao_atribuidos = df_calc
+        alertas = []
+        st.info("Editor manual aberto: selecione pontos no mapa e aloque nas rotas.")
+    else:
+        with st.spinner("Atribuindo bairros e montando rotas..."):
+            rotas_resultado, nao_atribuidos, alertas, df_calc = clusterizar_por_bairros(
+                df,
+                destino_final,
+                capacidades,
+                client,
+                gdf_bairros,
+                tipo_rota_calc,
+                validar_tempo_ors=validar_tempo_ors,
+            )
 
     a_tempo = [a for a in alertas if a["tipo"] == "tempo"]
     a_taxa = [a for a in alertas if a["tipo"] == "taxa"]
@@ -572,7 +607,7 @@ if processar and uploaded_file and destino_final:
     a_waypoints = [a for a in alertas if a["tipo"] == "waypoints"]
     a_rota_extra = [a for a in alertas if a["tipo"] == "rota_extra"]
 
-    if any([a_tempo, a_taxa, a_isolados, a_waypoints, a_rota_extra, not nao_atribuidos.empty]):
+    if modo_criacao != "Manual" and any([a_tempo, a_taxa, a_isolados, a_waypoints, a_rota_extra, not nao_atribuidos.empty]):
         st.subheader("⚠️ Atenção")
 
         if a_rota_extra:
@@ -685,10 +720,6 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
     destino_final = st.session_state["destino_final"]
     tipo_rota_calc = st.session_state.get("tipo_rota_calc", "Entrada")
     lat_col, lon_col = colunas_tipo(tipo_rota_calc)
-
-    if not atribuicao:
-        st.warning("Nenhum colaborador foi atribuído às rotas. Revise os alertas acima.")
-        st.stop()
 
     rota_info = {r["rota_id"]: {"nome": r["nome_rota"], "cap": r["capacidade"]} for r in rotas_orig}
 
@@ -864,6 +895,14 @@ body {{ display:flex; height:640px; overflow:hidden; }}
 #btn-confirmar:hover {{ background:#15803d; }}
 #status-msg {{ font-size:11px; color:#6ee7b7; margin-top:5px; text-align:center; min-height:15px; }}
 #fallback-payload {{ display:none; width:100%; height:72px; margin-top:8px; resize:none; border-radius:5px; border:1px solid #444; background:#222; color:#ddd; padding:6px; font-size:10px; }}
+#selecao-wrap {{ padding:10px 12px; background:#171717; border-bottom:1px solid #333; }}
+#selecao-wrap select {{ width:100%; margin:6px 0; padding:7px 8px; border-radius:5px; border:1px solid #444; background:#222; color:#eee; }}
+#selecao-wrap button {{ width:100%; margin-top:6px; padding:8px; border:none; border-radius:6px; font-weight:700; cursor:pointer; }}
+#btn-selecionar-area {{ background:#2563eb; color:#fff; }}
+#btn-aplicar-selecao {{ background:#16a34a; color:#fff; }}
+#btn-limpar-selecao {{ background:#333; color:#ddd; }}
+#selecao-status {{ font-size:11px; color:#aaa; min-height:16px; margin-top:4px; }}
+.selection-rect-hint {{ cursor:crosshair !important; }}
 #popup-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; align-items:center; justify-content:center; }}
 #popup-overlay.ativo {{ display:flex; }}
 #popup-box {{ background:#fff; border-radius:10px; padding:20px 24px; min-width:290px; box-shadow:0 8px 32px rgba(0,0,0,.35); }}
@@ -880,7 +919,7 @@ body {{ display:flex; height:640px; overflow:hidden; }}
 </head>
 <body>
 <div id="map"></div>
-<div id="painel"><div id="painel-header">🗂 Rotas</div><div id="toggles"></div><div id="confirmar-wrap"><button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button><div id="status-msg"></div><textarea id="fallback-payload" readonly></textarea></div></div>
+<div id="painel"><div id="painel-header">🗂 Rotas</div><div id="selecao-wrap"><select id="bulk-rota-select"></select><button id="btn-selecionar-area" onclick="ativarSelecaoArea()">Selecionar área</button><button id="btn-aplicar-selecao" onclick="aplicarSelecao()">Adicionar selecionados</button><button id="btn-limpar-selecao" onclick="limparSelecao()">Limpar seleção</button><div id="selecao-status">0 selecionado(s)</div></div><div id="toggles"></div><div id="confirmar-wrap"><button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button><div id="status-msg"></div><textarea id="fallback-payload" readonly></textarea></div></div>
 <div id="popup-overlay"><div id="popup-box"><h3 id="popup-nome"></h3><div class="popup-sub" id="popup-sub"></div><label>Transferir para:</label><select id="popup-select"></select><div class="btn-row"><button class="btn btn-cancel" onclick="fecharPopup()">Cancelar</button><button class="btn btn-ok" onclick="transferir()">Transferir</button></div></div></div>
 <script>
 const PONTOS = {pontos_json};
@@ -1042,6 +1081,130 @@ function confirmar() {{
   fallback.style.display = 'block';
   fallback.select();
 }}
+let selecionados = new Set();
+let selecaoAreaAtiva = false;
+let selecaoInicio = null;
+let selecaoRetangulo = null;
+
+function criarIconeSelecionado(rid) {{
+  if (rid === null || rid === undefined) {{
+    return L.divIcon({{ html:'<div style="width:18px;height:18px;border-radius:3px;background:#111;border:3px solid #facc15;box-shadow:0 1px 7px rgba(0,0,0,.8);cursor:pointer"></div>', iconAnchor:[9,9], className:'' }});
+  }}
+  const cor = corRota(rid);
+  return L.divIcon({{ html:`<div style="width:17px;height:17px;border-radius:50%;background:${{cor}};border:3px solid #facc15;box-shadow:0 1px 7px rgba(0,0,0,.8);cursor:pointer"></div>`, iconAnchor:[8,8], className:'' }});
+}}
+
+function atualizarIconePonto(dfIdx) {{
+  const rid = atribuicao[dfIdx];
+  if (selecionados.has(String(dfIdx))) markers[dfIdx].setIcon(criarIconeSelecionado(rid));
+  else markers[dfIdx].setIcon(criarIcone(rid));
+}}
+
+function atualizarStatusSelecao() {{
+  const el = document.getElementById('selecao-status');
+  if (el) el.textContent = `${{selecionados.size}} selecionado(s)`;
+}}
+
+function atualizarBulkSelect() {{
+  const sel = document.getElementById('bulk-rota-select');
+  if (!sel) return;
+  const atual = sel.value;
+  sel.innerHTML = '';
+  OPCOES.forEach(op => {{
+    const opt = document.createElement('option');
+    opt.value = op.rota_id;
+    opt.textContent = op.label;
+    sel.appendChild(opt);
+  }});
+  if (atual) sel.value = atual;
+}}
+
+function limparSelecao() {{
+  const antigos = Array.from(selecionados);
+  selecionados.clear();
+  antigos.forEach(idx => atualizarIconePonto(idx));
+  atualizarStatusSelecao();
+}}
+
+function selecionarDentro(bounds) {{
+  PONTOS.forEach(p => {{
+    const mk = markers[p.df_idx];
+    if (mk && bounds.contains(mk.getLatLng())) {{
+      selecionados.add(String(p.df_idx));
+      atualizarIconePonto(p.df_idx);
+    }}
+  }});
+  atualizarStatusSelecao();
+}}
+
+function ativarSelecaoArea() {{
+  selecaoAreaAtiva = true;
+  selecaoInicio = null;
+  if (selecaoRetangulo) {{
+    map.removeLayer(selecaoRetangulo);
+    selecaoRetangulo = null;
+  }}
+  map.dragging.disable();
+  map.getContainer().classList.add('selection-rect-hint');
+  document.getElementById('selecao-status').textContent = 'Clique e arraste no mapa para selecionar';
+}}
+
+map.on('mousedown', function(e) {{
+  if (!selecaoAreaAtiva) return;
+  selecaoInicio = e.latlng;
+  if (selecaoRetangulo) map.removeLayer(selecaoRetangulo);
+  selecaoRetangulo = L.rectangle([selecaoInicio, selecaoInicio], {{
+    color:'#facc15',
+    weight:1,
+    fillColor:'#facc15',
+    fillOpacity:.12
+  }}).addTo(map);
+}});
+
+map.on('mousemove', function(e) {{
+  if (!selecaoAreaAtiva || !selecaoInicio || !selecaoRetangulo) return;
+  selecaoRetangulo.setBounds(L.latLngBounds(selecaoInicio, e.latlng));
+}});
+
+map.on('mouseup', function(e) {{
+  if (!selecaoAreaAtiva || !selecaoInicio) return;
+  const bounds = L.latLngBounds(selecaoInicio, e.latlng);
+  if (selecaoRetangulo) {{
+    selecaoRetangulo.setBounds(bounds);
+    setTimeout(() => {{
+      if (selecaoRetangulo) map.removeLayer(selecaoRetangulo);
+      selecaoRetangulo = null;
+    }}, 250);
+  }}
+  selecionarDentro(bounds);
+  selecaoAreaAtiva = false;
+  selecaoInicio = null;
+  map.dragging.enable();
+  map.getContainer().classList.remove('selection-rect-hint');
+}});
+
+function aplicarSelecao() {{
+  const sel = document.getElementById('bulk-rota-select');
+  if (!sel || selecionados.size === 0) return;
+  const novaRota = parseInt(sel.value);
+  selecionados.forEach(dfIdx => {{
+    atribuicao[dfIdx] = novaRota;
+    const ponto = PONTOS.find(p => String(p.df_idx) === String(dfIdx));
+    if (ponto) {{
+      ponto.rota_id = novaRota;
+      ponto.sem_rota = false;
+    }}
+  }});
+  limparSelecao();
+  atualizar();
+}}
+
+const atualizarBase = atualizar;
+atualizar = function() {{
+  atualizarBase();
+  atualizarBulkSelect();
+  atualizarStatusSelecao();
+}};
 atualizar();
 </script>
 </body>
