@@ -583,6 +583,8 @@ if processar and uploaded_file and destino_final:
         for idx in r["indices"]:
             atribuicao[idx] = r["rota_id"]
     st.session_state["atribuicao"] = atribuicao
+    st.session_state["atribuicao_confirmada"] = False
+    st.session_state["atribuicao_origem"] = "inicial"
     st.session_state["kmls"] = None
 
 
@@ -592,9 +594,12 @@ if processar and uploaded_file and destino_final:
 qp = st.query_params
 if "atrib" in qp:
     try:
-        decoded = urllib.parse.unquote(qp["atrib"])
+        raw_qp_atrib = qp["atrib"][0] if isinstance(qp["atrib"], list) else qp["atrib"]
+        decoded = urllib.parse.unquote(raw_qp_atrib)
         atrib_from_url = {int(k): int(v) for k, v in json.loads(decoded).items()}
         st.session_state["atribuicao"] = atrib_from_url
+        st.session_state["atribuicao_confirmada"] = True
+        st.session_state["atribuicao_origem"] = "mapa"
         st.query_params.clear()
         st.rerun()
     except Exception as e:
@@ -612,6 +617,8 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
                 st.session_state["atribuicao"] = {
                     int(k): int(v) for k, v in json.loads(atrib_manual).items()
                 }
+                st.session_state["atribuicao_confirmada"] = True
+                st.session_state["atribuicao_origem"] = "manual"
                 st.success("Edições aplicadas.")
                 st.rerun()
             except Exception as e:
@@ -689,6 +696,26 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
         }
 
     metricas = calcular_metricas(atribuicao, cap_map)
+
+    resumo_atual = []
+    for rid in sorted(cap_map):
+        resumo_atual.append(
+            {
+                "ROTA": f"Rota {rid}",
+                "COLABORADORES_SALVOS": metricas[rid]["ocupacao"],
+                "CAPACIDADE": metricas[rid]["cap"],
+                "TAXA_%": metricas[rid]["taxa"],
+            }
+        )
+
+    origem_atrib = st.session_state.get("atribuicao_origem", "inicial")
+    if st.session_state.get("atribuicao_confirmada"):
+        st.success(f"Edições salvas no Streamlit a partir de: {origem_atrib}.")
+    else:
+        st.info("As rotas abaixo ainda estão no estado inicial. Depois de editar no mapa, confirme e confira se este resumo mudou.")
+
+    with st.expander("Resumo da atribuição salva para o KML", expanded=True):
+        st.dataframe(pd.DataFrame(resumo_atual), hide_index=True, use_container_width=True)
 
     opcoes_rotas = [
         {
@@ -833,7 +860,10 @@ atualizar();
     with col_btn:
         gerar_kmls = st.button("🗂️ Gerar KMLs", type="primary")
     with col_info:
-        st.caption("Confirme as edições no mapa e depois gere os arquivos.")
+        st.caption(
+            "O KML será gerado usando o resumo salvo acima. "
+            "Se os números não mudaram após editar, aplique o código manual do mapa antes de gerar."
+        )
 
     if gerar_kmls:
         atrib_editada = {int(k): int(v) for k, v in st.session_state["atribuicao"].items()}
