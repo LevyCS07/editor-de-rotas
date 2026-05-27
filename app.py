@@ -25,6 +25,7 @@ TAXA_MINIMA = 0.60
 MAX_TEMPO_MIN = 90
 MAX_WAYPOINTS = 48
 VELOCIDADE_MEDIA_KMH = 28
+CAMPO_NOME_BAIRRO = "Name"
 
 GEOJSON_PATH = os.path.join(os.path.dirname(__file__), "BAIRROS_MANAUS.geojson")
 
@@ -106,7 +107,12 @@ def carregar_bairros():
     bairros = []
 
     def nome_bairro(props, fallback):
+        valor_campo_principal = props.get(CAMPO_NOME_BAIRRO)
+        if valor_campo_principal not in (None, ""):
+            return str(valor_campo_principal).strip()
+
         preferidas = [
+            CAMPO_NOME_BAIRRO,
             "NM_BAIRRO",
             "NOME_BAIRRO",
             "NOM_BAIRRO",
