@@ -601,6 +601,22 @@ if "atrib" in qp:
         st.warning(f"Erro ao ler edições do mapa: {e}")
 
 if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is not None:
+    with st.expander("Aplicar edições manualmente", expanded=False):
+        st.caption(
+            "Use isto somente se o botão Confirmar edições do mapa ficar preso em Aguarde. "
+            "Cole aqui o código JSON exibido no painel do mapa."
+        )
+        atrib_manual = st.text_area("Código das edições", key="atrib_manual_json", height=100)
+        if st.button("Aplicar código de edições"):
+            try:
+                st.session_state["atribuicao"] = {
+                    int(k): int(v) for k, v in json.loads(atrib_manual).items()
+                }
+                st.success("Edições aplicadas.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Não consegui aplicar esse código: {e}")
+
     df_base = st.session_state["df_base"]
     atribuicao = st.session_state["atribuicao"]
     rotas_orig = st.session_state["rotas_resultado"]
@@ -732,6 +748,7 @@ body {{ display:flex; height:640px; overflow:hidden; }}
 #btn-confirmar {{ width:100%; padding:10px; background:#16a34a; color:#fff; border:none; border-radius:7px; font-size:13px; font-weight:700; cursor:pointer; }}
 #btn-confirmar:hover {{ background:#15803d; }}
 #status-msg {{ font-size:11px; color:#6ee7b7; margin-top:5px; text-align:center; min-height:15px; }}
+#fallback-payload {{ display:none; width:100%; height:72px; margin-top:8px; resize:none; border-radius:5px; border:1px solid #444; background:#222; color:#ddd; padding:6px; font-size:10px; }}
 #popup-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; align-items:center; justify-content:center; }}
 #popup-overlay.ativo {{ display:flex; }}
 #popup-box {{ background:#fff; border-radius:10px; padding:20px 24px; min-width:290px; box-shadow:0 8px 32px rgba(0,0,0,.35); }}
@@ -748,7 +765,7 @@ body {{ display:flex; height:640px; overflow:hidden; }}
 </head>
 <body>
 <div id="map"></div>
-<div id="painel"><div id="painel-header">🗂 Rotas</div><div id="toggles"></div><div id="confirmar-wrap"><button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button><div id="status-msg"></div></div></div>
+<div id="painel"><div id="painel-header">🗂 Rotas</div><div id="toggles"></div><div id="confirmar-wrap"><button id="btn-confirmar" onclick="confirmar()">✅ Confirmar edições</button><div id="status-msg"></div><textarea id="fallback-payload" readonly></textarea></div></div>
 <div id="popup-overlay"><div id="popup-box"><h3 id="popup-nome"></h3><div class="popup-sub" id="popup-sub"></div><label>Transferir para:</label><select id="popup-select"></select><div class="btn-row"><button class="btn btn-cancel" onclick="fecharPopup()">Cancelar</button><button class="btn btn-ok" onclick="transferir()">Transferir</button></div></div></div>
 <script>
 const PONTOS = {pontos_json};
@@ -777,7 +794,33 @@ function abrirPopup(dfIdx) {{ popupDfIdx = dfIdx; const p = PONTOS.find(x => x.d
 function fecharPopup() {{ document.getElementById('popup-overlay').classList.remove('ativo'); popupDfIdx = null; }}
 function transferir() {{ if (popupDfIdx === null) return; const novaRota = parseInt(document.getElementById('popup-select').value); atribuicao[popupDfIdx] = novaRota; markers[popupDfIdx].setIcon(criarIcone(novaRota)); if (rotasVisiveis[novaRota] === false) markers[popupDfIdx].addTo(map); fecharPopup(); atualizar(); }}
 document.getElementById('popup-overlay').addEventListener('click', function(e) {{ if (e.target === this) fecharPopup(); }});
-function confirmar() {{ document.getElementById('status-msg').textContent = 'Aguarde...'; const payload = encodeURIComponent(JSON.stringify(atribuicao)); window.parent.location.href = window.parent.location.pathname + '?atrib=' + payload; }}
+function confirmar() {{
+  const status = document.getElementById('status-msg');
+  const fallback = document.getElementById('fallback-payload');
+  const raw = JSON.stringify(atribuicao);
+  const payload = encodeURIComponent(raw);
+  status.textContent = 'Aguarde...';
+  fallback.style.display = 'none';
+  fallback.value = raw;
+
+  let targetUrl = '?atrib=' + payload;
+  try {{
+    const parentPath = window.parent.location.pathname || window.top.location.pathname || '/';
+    targetUrl = parentPath + '?atrib=' + payload;
+  }} catch (err) {{}}
+
+  try {{
+    window.open(targetUrl, '_top');
+  }} catch (err) {{
+    try {{ window.top.location.href = targetUrl; }} catch (err2) {{}}
+  }}
+
+  setTimeout(() => {{
+    status.textContent = 'Se não recarregar, copie o código abaixo e aplique fora do mapa.';
+    fallback.style.display = 'block';
+    fallback.select();
+  }}, 1500);
+}}
 atualizar();
 </script>
 </body>
