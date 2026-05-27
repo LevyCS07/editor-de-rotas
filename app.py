@@ -104,9 +104,44 @@ def carregar_bairros():
     with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
         geojson = json.load(f)
     bairros = []
+
+    def nome_bairro(props, fallback):
+        preferidas = [
+            "NM_BAIRRO",
+            "NOME_BAIRRO",
+            "NOM_BAIRRO",
+            "NOMEBAIRRO",
+            "NOME",
+            "BAIRRO",
+            "bairro",
+            "nome",
+            "name",
+            "Name",
+            "DESCRICAO",
+            "DESCRIÇÃO",
+        ]
+        for chave in preferidas:
+            valor = props.get(chave)
+            if valor not in (None, "") and not str(valor).strip().isdigit():
+                return str(valor).strip()
+
+        candidatos = []
+        for chave, valor in props.items():
+            if valor in (None, ""):
+                continue
+            chave_upper = str(chave).upper()
+            valor_txt = str(valor).strip()
+            if not valor_txt or valor_txt.isdigit():
+                continue
+            if any(token in chave_upper for token in ["COD", "CODE", "CD_", "ID", "OBJECTID", "FID"]):
+                continue
+            if any(token in chave_upper for token in ["BAIR", "NOME", "NAME", "DESC"]):
+                candidatos.append(valor_txt)
+        return candidatos[0] if candidatos else fallback
+
     for feat in geojson["features"]:
         props = feat.get("properties", {})
-        nome = props.get("NM_BAIRRO") or props.get("nome") or props.get("name") or f"B{len(bairros)}"
+        nome = nome_bairro(props, f"B{len(bairros)}")
         geom = shape(feat["geometry"])
         centroid = geom.centroid
         bairros.append(
@@ -784,7 +819,10 @@ if "atribuicao" in st.session_state and st.session_state.get("atribuicao") is no
 <head>
 <meta charset="utf-8"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
 <style>
 * {{ box-sizing:border-box; margin:0; padding:0; font-family:sans-serif; font-size:13px; }}
 body {{ display:flex; height:640px; overflow:hidden; }}
@@ -834,6 +872,13 @@ let atribuicao = {{}};
 PONTOS.forEach(p => {{ if (p.rota_id !== null && p.rota_id !== undefined) atribuicao[p.df_idx] = p.rota_id; }});
 const map = L.map('map').setView([{centro_lat}, {centro_lon}], 12);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{ attribution:'© OpenStreetMap' }}).addTo(map);
+const markerLayer = L.markerClusterGroup ? L.markerClusterGroup({{
+  spiderfyOnMaxZoom: true,
+  showCoverageOnHover: false,
+  maxClusterRadius: 28,
+  disableClusteringAtZoom: 18
+}}) : L.layerGroup();
+map.addLayer(markerLayer);
 L.marker(DESTINO, {{ icon: L.divIcon({{ html:'<div style="background:#111;color:#fff;border-radius:4px;padding:3px 7px;font-size:11px;font-weight:700;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.5)">🏁 Destino</div>', iconAnchor:[40,10], className:'' }}) }}).addTo(map);
 function corRota(rid) {{ return CORES[(rid-1) % CORES.length]; }}
 function criarIcone(rid) {{
@@ -844,7 +889,7 @@ function criarIcone(rid) {{
   return L.divIcon({{ html:`<div style="width:13px;height:13px;border-radius:50%;background:${{cor}};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer"></div>`, iconAnchor:[6,6], className:'' }});
 }}
 let markers = {{}};
-PONTOS.forEach(p => {{ const mk = L.marker([p.lat, p.lon], {{icon: criarIcone(atribuicao[p.df_idx])}}).addTo(map).bindTooltip(p.sem_rota ? `${{p.nome}} (sem rota)` : p.nome, {{permanent:false, direction:'top', offset:[0,-8]}}).on('click', () => abrirPopup(p.df_idx)); markers[p.df_idx] = mk; }});
+PONTOS.forEach(p => {{ const mk = L.marker([p.lat, p.lon], {{icon: criarIcone(atribuicao[p.df_idx])}}).bindTooltip(p.sem_rota ? `${{p.nome}} (sem rota)` : p.nome, {{permanent:false, direction:'top', offset:[0,-8]}}).on('click', () => abrirPopup(p.df_idx)); markers[p.df_idx] = mk; markerLayer.addLayer(mk); }});
 let polylines = {{}};
 let rotasVisiveis = {{}};
 function pontosOrdenadosPorRota(rid) {{ const pts = PONTOS.filter(p => atribuicao[p.df_idx] === rid); pts.sort((a,b) => Math.hypot(b.lat-DESTINO[0], b.lon-DESTINO[1]) - Math.hypot(a.lat-DESTINO[0], a.lon-DESTINO[1])); return pts; }}
@@ -937,9 +982,21 @@ function transferir() {{
   const ponto = PONTOS.find(p => p.df_idx === popupDfIdx);
   if (ponto) ponto.rota_id = novaRota;
   markers[popupDfIdx].setIcon(criarIcone(novaRota));
-  if (rotasVisiveis[novaRota] === false) markers[popupDfIdx].addTo(map);
+  if (rotasVisiveis[novaRota] === false) markerLayer.addLayer(markers[popupDfIdx]);
   fecharPopup();
   atualizar();
+}}
+function toggleRota(rid, e) {{
+  e.stopPropagation();
+  rotasVisiveis[rid] = !rotasVisiveis[rid];
+  Object.keys(atribuicao).forEach(idx => {{
+    if (atribuicao[idx] === rid) {{
+      if (rotasVisiveis[rid]) markerLayer.addLayer(markers[idx]);
+      else markerLayer.removeLayer(markers[idx]);
+    }}
+  }});
+  atualizarLinhas();
+  atualizarTogglesPainel();
 }}
 function confirmar() {{
   const status = document.getElementById('status-msg');
